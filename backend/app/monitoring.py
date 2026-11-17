@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.alerts import send_alert
 from app.analytics import compute_kpis, month_to_date_cost, period_bounds, resolve_timezone
 from app.config import Settings
-from app.configuration import DEFAULTS, with_defaults
+from app.configuration import DEFAULTS, decrypt_secret, with_defaults
 from app.models import AuditLog, InboundMessage, SystemSetting
 
 logger = logging.getLogger("upenflow.monitoring")
@@ -131,20 +131,50 @@ def check_budget_alert(db: Session, settings: Settings, configuration: dict) -> 
     save_state(db, state)
 
 
-def check_low_credit(db: Session, settings: Settings, configuration: dict) -> None:
+def fetch_balance(settings: Settings, configuration: dict) -> Decimal:
+    """Calls Onfon's Balance endpoint with the configured gateway credentials. Raises
+    ServiceBError (see app.service_b) if the gateway isn't fully configured or the call fails."""
+    from app.service_b import ServiceBAdapter, ServiceBError
+
     gateway = configuration.get("gateway", {})
+    if not gateway.get("base_url") or not gateway.get("encrypted_api_key") or not gateway.get("encrypted_client_id") or not gateway.get("encrypted_access_key"):
+        raise ServiceBError("Gateway is not fully configured (base URL, API key, Client ID, and Access key are all required)", retryable=False)
+    key = settings.secret_encryption_key or settings.otp_pepper
+    api_key = decrypt_secret(gateway["encrypted_api_key"], key)
+    client_id = decrypt_secret(gateway["encrypted_client_id"], key)
+    access_key = decrypt_secret(gateway["encrypted_access_key"], key)
+    adapter = ServiceBAdapter(gateway["base_url"], api_key, client_id, access_key)
+    return adapter.get_balance()
+
+
+def fetch_and_record_balance(db: Session, settings: Settings, configuration: dict) -> Decimal:
+    """Fetches the live balance and stores it in monitoring_state so Settings > Monitoring &
+    Alerts can show the last-known value without making its own gateway call on every page load."""
+    balance = fetch_balance(settings, configuration)
+    state = get_state(db)
+    state["balance_kes"] = str(balance)
+    state["balance_checked_at"] = datetime.now(timezone.utc).isoformat()
+    save_state(db, state)
+    return balance
+
+
+def check_low_credit(db: Session, settings: Settings, configuration: dict) -> None:
     monitoring = configuration.get("monitoring", {})
-    balance_url = gateway.get("balance_url")
-    if not balance_url:
+    if not monitoring.get("balance_check_enabled", True):
+        return
+    state = get_state(db)
+    interval = timedelta(minutes=int(monitoring.get("balance_check_interval_minutes", 60)))
+    last_checked_raw = state.get("balance_checked_at")
+    if last_checked_raw:
+        last_checked = datetime.fromisoformat(last_checked_raw)
+        if datetime.now(timezone.utc) - last_checked < interval:
+            return
+    try:
+        balance = fetch_and_record_balance(db, settings, configuration)
+    except Exception:
+        logger.warning("balance_check_failed")
         return
     low_credit = Decimal(str(monitoring.get("low_credit_kes", "1000")))
-    try:
-        import httpx
-
-        response = httpx.get(balance_url, timeout=10.0)
-        balance = Decimal(str(response.json().get("balance_kes", "0")))
-    except Exception:
-        return
     if balance >= low_credit:
         return
     state = get_state(db)

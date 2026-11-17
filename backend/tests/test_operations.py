@@ -383,3 +383,78 @@ def test_retention_purge_deletes_old_terminal_messages(ops_client):
     with app.state.session_factory() as db:
         remaining = {row.source_message_id for row in db.scalars(select(InboundMessage)).all()}
         assert remaining == {"recent-1"}
+
+
+def test_balance_endpoint_requires_configured_gateway(ops_client):
+    client, app = ops_client
+    assert client.get("/api/settings/balance").json() == {"balance_kes": None, "checked_at": None}
+    response = client.post("/api/settings/balance/check")
+    assert response.status_code == 502
+    assert "not fully configured" in response.json()["detail"]
+
+
+def test_balance_check_now_records_and_surfaces_live_balance(ops_client, monkeypatch):
+    client, app = ops_client
+    assert configure_gateway(client).status_code == 200
+
+    from app import service_b
+
+    class FakeAdapter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_balance(self):
+            from decimal import Decimal
+            return Decimal("4321.50")
+
+    monkeypatch.setattr(service_b, "ServiceBAdapter", FakeAdapter)
+    checked = client.post("/api/settings/balance/check")
+    assert checked.status_code == 200
+    assert checked.json()["balance_kes"] == "4321.50"
+
+    fetched = client.get("/api/settings/balance").json()
+    assert fetched["balance_kes"] == "4321.50"
+    assert fetched["checked_at"] is not None
+
+
+def test_check_low_credit_alerts_once_and_respects_interval(ops_client, monkeypatch):
+    client, app = ops_client
+    assert configure_gateway(client).status_code == 200
+    client.patch("/api/settings", json={
+        "monitoring": {"low_credit_kes": "1000.00", "balance_check_interval_minutes": 60},
+        "alert_emails": ["ops@example.com"],
+    })
+
+    from app import service_b, monitoring as monitoring_module
+
+    call_count = {"n": 0}
+
+    class FakeAdapter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_balance(self):
+            from decimal import Decimal
+            call_count["n"] += 1
+            return Decimal("500.00")
+
+    monkeypatch.setattr(service_b, "ServiceBAdapter", FakeAdapter)
+
+    sent_subjects = []
+    original_send_alert = monitoring_module.send_alert
+
+    def fake_send_alert(settings, configuration, subject, message):
+        sent_subjects.append(subject)
+
+    monitoring_module.send_alert = fake_send_alert
+    try:
+        with app.state.session_factory() as db:
+            configuration = monitoring.load_configuration(db)
+            monitoring.check_low_credit(db, app.state.settings, configuration)
+            # Second call immediately after: within the configured interval, should not re-check.
+            monitoring.check_low_credit(db, app.state.settings, configuration)
+    finally:
+        monitoring_module.send_alert = original_send_alert
+
+    assert call_count["n"] == 1
+    assert sent_subjects == ["SMS gateway balance is low"]

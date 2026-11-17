@@ -66,6 +66,8 @@ class MonitoringUpdate(BaseModel):
     service_a_silence_minutes: int | None = Field(default=None, ge=1, le=1440)
     error_rate_threshold_percent: int | None = Field(default=None, ge=1, le=100)
     low_credit_kes: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    balance_check_enabled: bool | None = None
+    balance_check_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     slack_webhook_url: str | None = Field(default=None, max_length=1000)
     telegram_bot_token: str | None = Field(default=None, max_length=200)
     telegram_chat_id: str | None = Field(default=None, max_length=120)
@@ -96,6 +98,8 @@ DEFAULTS: dict[str, Any] = {
         "service_a_silence_minutes": 30,
         "error_rate_threshold_percent": 20,
         "low_credit_kes": "1000.00",
+        "balance_check_enabled": True,
+        "balance_check_interval_minutes": 60,
         "encrypted_slack_webhook_url": None,
         "encrypted_telegram_bot_token": None,
         "telegram_chat_id": None,
@@ -246,3 +250,27 @@ def update_configuration(payload: ConfigurationUpdate, request: Request, db: Ses
     ))
     db.commit()
     return new_public
+
+
+@router.get("/balance")
+def get_balance(db: Session = Depends(get_db), admin: User = Depends(require_super_admin)):
+    """Last-known SMS credit balance, as recorded by the periodic background check (or the most
+    recent "Check now"). Does not call the gateway itself — see POST /balance/check for that."""
+    from app.monitoring import get_state
+
+    state = get_state(db)
+    return {"balance_kes": state.get("balance_kes"), "checked_at": state.get("balance_checked_at")}
+
+
+@router.post("/balance/check")
+def check_balance_now(request: Request, db: Session = Depends(get_db), admin: User = Depends(require_super_admin)):
+    from app.monitoring import fetch_and_record_balance
+    from app.service_b import ServiceBError
+
+    record = db.scalar(select(SystemSetting).where(SystemSetting.key == "configuration"))
+    configuration = with_defaults(record.value) if record else DEFAULTS
+    try:
+        balance = fetch_and_record_balance(db, request.app.state.settings, configuration)
+    except ServiceBError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"balance_kes": str(balance), "checked_at": datetime.now(timezone.utc).isoformat()}

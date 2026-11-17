@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 from app.service_b import ServiceBAdapter, ServiceBError
@@ -19,6 +21,10 @@ class FakeHttpxClient:
 
     def post(self, url, json, headers, timeout):
         self.last_call = {"url": url, "json": json, "headers": headers, "timeout": timeout}
+        return self.response
+
+    def get(self, url, params, headers, timeout):
+        self.last_call = {"url": url, "params": params, "headers": headers, "timeout": timeout}
         return self.response
 
 
@@ -102,3 +108,39 @@ def test_send_returns_none_when_data_missing():
     adapter, _ = make_adapter(response)
 
     assert adapter.send("UPENFLOW", "254712345678", "text", "msg-6") is None
+
+
+def test_get_balance_parses_onfon_currency_string():
+    response = FakeResponse(200, {
+        "ErrorCode": 0, "ErrorDescription": "Success",
+        "Data": [{"PluginType": "SMS", "Credits": "KSh7578560.8000"}],
+    })
+    adapter, fake_client = make_adapter(response)
+
+    balance = adapter.get_balance()
+
+    assert balance == Decimal("7578560.8000")
+    assert fake_client.last_call["url"] == "https://api.onfonmedia.co.ke/v1/sms/Balance"
+    assert fake_client.last_call["params"] == {"ApiKey": "api-key-123", "ClientId": "client-id-456"}
+    assert fake_client.last_call["headers"]["AccessKey"] == "access-key-789"
+
+
+def test_get_balance_raises_non_retryable_on_error_code():
+    response = FakeResponse(200, {"ErrorCode": 5, "ErrorDescription": "Invalid credentials"})
+    adapter, _ = make_adapter(response)
+
+    with pytest.raises(ServiceBError) as excinfo:
+        adapter.get_balance()
+
+    assert excinfo.value.retryable is False
+    assert "Invalid credentials" in str(excinfo.value)
+
+
+def test_get_balance_raises_retryable_on_server_error():
+    response = FakeResponse(503, {})
+    adapter, _ = make_adapter(response)
+
+    with pytest.raises(ServiceBError) as excinfo:
+        adapter.get_balance()
+
+    assert excinfo.value.retryable is True

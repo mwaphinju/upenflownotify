@@ -73,6 +73,7 @@ type Configuration = {
   retention: { message_retention_days: number; audit_log_retention_days: number }
   monitoring: {
     service_a_silence_minutes: number; error_rate_threshold_percent: number; low_credit_kes: string
+    balance_check_enabled: boolean; balance_check_interval_minutes: number
     slack_webhook_url: string | null; has_slack_webhook: boolean; telegram_bot_token: string | null; has_telegram_bot_token: boolean
     telegram_chat_id: string | null; oncall_phone: string | null
   }
@@ -870,10 +871,28 @@ function MonitoringSettingsPage() {
   const [telegramToken, setTelegramToken] = useState('')
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
+  const [balance, setBalance] = useState<{ balance_kes: string | null; checked_at: string | null } | null>(null)
+  const [checkingBalance, setCheckingBalance] = useState(false)
 
   useEffect(() => {
     api<Configuration>('/api/settings').then((config) => setAlertEmails(config.alert_emails.join(', '))).catch(() => undefined)
   }, [])
+
+  async function loadBalance(silent = false) {
+    try { setBalance(await api('/api/settings/balance')) }
+    catch (reason) { if (!silent) setError(reason instanceof Error ? reason.message : 'Unable to load balance.') }
+  }
+  useEffect(() => { void loadBalance() }, [])
+  useAutoRefresh(() => { void loadBalance(true) }, 60000)
+
+  async function checkBalanceNow() {
+    setCheckingBalance(true); setError(''); setNotice('')
+    try {
+      setBalance(await api('/api/settings/balance/check', { method: 'POST' }))
+      setNotice('Balance refreshed.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to check the balance right now.') }
+    finally { setCheckingBalance(false) }
+  }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -898,12 +917,24 @@ function MonitoringSettingsPage() {
     <SettingsPageShell kicker="SETTINGS / MONITORING" title="Monitoring & alerts" description="Who gets paged, and over which channels, when something needs attention." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
       {loading || !monitoring ? <div className="dashboard-loading">Loading monitoring settings…</div> : (
         <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card balance-card">
+            <div className="section-heading"><div><span className="section-kicker">GATEWAY CREDIT</span><h2>SMS balance</h2></div></div>
+            {balance?.balance_kes ? (
+              <>
+                <strong className="balance-amount">KES {Number(balance.balance_kes).toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>
+                <small>Last checked {balance.checked_at ? new Date(balance.checked_at).toLocaleString() : 'never'}</small>
+              </>
+            ) : <p className="inline-instruction">No balance recorded yet — configure the gateway credentials above and check now, or wait for the next periodic check.</p>}
+            <button className="secondary-button compact-button" type="button" disabled={checkingBalance} onClick={() => void checkBalanceNow()}><RefreshCw size={13} /> {checkingBalance ? 'Checking…' : 'Check now'}</button>
+          </section>
           <section className="md-card">
             <div className="settings-grid">
               <label className="wide-setting">Alert emails<input value={alertEmails} onChange={(event) => setAlertEmails(event.target.value)} placeholder="ops@upenflow.co.ke, oncall@upenflow.co.ke" /></label>
               <label>Service A silence alert (minutes)<input type="number" min="1" value={monitoring.service_a_silence_minutes} onChange={(event) => setMonitoring({ ...monitoring, service_a_silence_minutes: Number(event.target.value) })} /></label>
               <label>Service B error-rate threshold (%)<input type="number" min="1" max="100" value={monitoring.error_rate_threshold_percent} onChange={(event) => setMonitoring({ ...monitoring, error_rate_threshold_percent: Number(event.target.value) })} /></label>
               <label>Low credit threshold (KES)<input type="number" min="0" value={monitoring.low_credit_kes} onChange={(event) => setMonitoring({ ...monitoring, low_credit_kes: event.target.value })} /></label>
+              <label className="config-toggle"><span><strong>Check balance periodically</strong><small>Runs in the background and alerts below the threshold above.</small></span><input type="checkbox" checked={monitoring.balance_check_enabled} onChange={(event) => setMonitoring({ ...monitoring, balance_check_enabled: event.target.checked })} /></label>
+              <label>Balance check interval (minutes)<input type="number" min="5" max="1440" value={monitoring.balance_check_interval_minutes} onChange={(event) => setMonitoring({ ...monitoring, balance_check_interval_minutes: Number(event.target.value) })} disabled={!monitoring.balance_check_enabled} /></label>
               <label>On-call SMS number<input value={monitoring.oncall_phone ?? ''} onChange={(event) => setMonitoring({ ...monitoring, oncall_phone: event.target.value })} placeholder="0712345678" /></label>
               <label className="secret-field">Slack webhook <span>{monitoring.has_slack_webhook ? 'Saved webhook is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={slackWebhook} onChange={(event) => setSlackWebhook(event.target.value)} placeholder={monitoring.has_slack_webhook ? 'Enter a new URL to rotate' : 'https://hooks.slack.com/...'} /></label>
               <label className="secret-field">Telegram bot token <span>{monitoring.has_telegram_bot_token ? 'Saved token is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder={monitoring.has_telegram_bot_token ? 'Enter a new token to rotate' : 'Bot token'} /></label>

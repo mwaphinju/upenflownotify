@@ -1,7 +1,9 @@
 import hashlib
 import hmac
+import re
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -102,6 +104,42 @@ class ServiceBAdapter:
             raise ServiceBError(result.get("ErrorDescription") or f"Gateway rejected the message (ErrorCode {error_code})", retryable=False)
         data = result.get("Data") or []
         return data[0].get("MessageId") if data else None
+
+    def get_balance(self) -> Decimal:
+        """Onfon's SMS credit balance, e.g. "KSh7578560.8000" -> Decimal("7578560.8000")."""
+        client = self.client or httpx
+        balance_url = self.base_url.rsplit("/", 1)[0] + "/Balance"
+        try:
+            response = client.get(
+                balance_url,
+                params={"ApiKey": self.api_key, "ClientId": self.client_id},
+                headers={"Content-Type": "application/json", "AccessKey": self.access_key or ""},
+                timeout=self.timeout,
+            )
+        except httpx.TimeoutException as error:
+            raise ServiceBError("Balance check timed out", retryable=True) from error
+        except httpx.NetworkError as error:
+            raise ServiceBError("Balance check network error", retryable=True) from error
+        if response.status_code >= 500:
+            raise ServiceBError(f"Balance check returned HTTP {response.status_code}", retryable=True)
+        if response.status_code >= 400:
+            raise ServiceBError(f"Balance check returned HTTP {response.status_code}", retryable=False)
+        try:
+            result = response.json()
+        except ValueError as error:
+            raise ServiceBError("Balance check returned a non-JSON response", retryable=True) from error
+        error_code = result.get("ErrorCode")
+        if error_code not in (0, None):
+            raise ServiceBError(result.get("ErrorDescription") or f"Balance check failed (ErrorCode {error_code})", retryable=False)
+        data = result.get("Data") or []
+        sms_credits = next((row.get("Credits") for row in data if row.get("PluginType") == "SMS"), None)
+        if sms_credits is None and data:
+            sms_credits = data[0].get("Credits")
+        numeric = re.sub(r"[^0-9.]", "", str(sms_credits or "0")) or "0"
+        try:
+            return Decimal(numeric)
+        except InvalidOperation as error:
+            raise ServiceBError(f"Balance check returned an unparseable value: {sms_credits!r}", retryable=False) from error
 
 
 @router.post("/service-b", status_code=202)
