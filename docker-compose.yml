@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: notify
+      POSTGRES_USER: notify
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notify -d notify"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
+  api:
+    build:
+      context: ./backend
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment: &backend-environment
+      UPENFLOW_DATABASE_URL: postgresql+psycopg://notify:${POSTGRES_PASSWORD}@postgres:5432/notify
+      UPENFLOW_OTP_PEPPER: ${UPENFLOW_OTP_PEPPER:?Set UPENFLOW_OTP_PEPPER in .env}
+      UPENFLOW_COOKIE_SECURE: ${UPENFLOW_COOKIE_SECURE:-false}
+      UPENFLOW_FIRST_ADMIN_NAME: ${UPENFLOW_FIRST_ADMIN_NAME:-Upenflow Admin}
+      UPENFLOW_FIRST_ADMIN_EMAIL: ${UPENFLOW_FIRST_ADMIN_EMAIL:?Set UPENFLOW_FIRST_ADMIN_EMAIL in .env}
+      UPENFLOW_FIRST_ADMIN_PASSWORD: ${UPENFLOW_FIRST_ADMIN_PASSWORD:?Set UPENFLOW_FIRST_ADMIN_PASSWORD in .env}
+      UPENFLOW_SMTP_HOST: mailhog
+      UPENFLOW_SMTP_PORT: 1025
+      UPENFLOW_SMTP_STARTTLS: "false"
+      UPENFLOW_SMTP_FROM: notify@upenflow.local
+      UPENFLOW_SERVICE_A_API_KEY: ${UPENFLOW_SERVICE_A_API_KEY:-}
+      UPENFLOW_SERVICE_A_HMAC_SECRET: ${UPENFLOW_SERVICE_A_HMAC_SECRET:-}
+      UPENFLOW_SERVICE_B_DLR_API_KEY: ${UPENFLOW_SERVICE_B_DLR_API_KEY:-}
+      UPENFLOW_SERVICE_B_DLR_HMAC_SECRET: ${UPENFLOW_SERVICE_B_DLR_HMAC_SECRET:-}
+      UPENFLOW_SERVICE_B_REPLY_API_KEY: ${UPENFLOW_SERVICE_B_REPLY_API_KEY:-}
+      UPENFLOW_REDIS_URL: redis://redis:6379/0
+      UPENFLOW_AUTO_CREATE_SCHEMA: "false"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+
+  worker:
+    build:
+      context: ./backend
+    command: sh -c "rq worker --url redis://redis:6379/0 notifications"
+    environment: *backend-environment
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8000
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
