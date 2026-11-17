@@ -187,7 +187,7 @@ h1, h2, h3, p, dl, dd { margin: 0; }
 .icon-button:hover { background: var(--md-surface-container-high); }
 .nav-toggle.mobile-only { display: none; }
 .app-body { flex: 1; display: flex; min-height: 0; }
-.side-nav { width: var(--side-nav-width); flex: 0 0 auto; padding: 12px 10px 20px; overflow-y: auto; background: var(--md-surface-container-lowest); border-right: 1px solid var(--md-outline-variant); transition: width .18s ease; }
+.side-nav { width: var(--side-nav-width); flex: 0 0 auto; align-self: flex-start; position: sticky; top: var(--app-bar-height); max-height: calc(100vh - var(--app-bar-height)); padding: 12px 10px 20px; overflow-y: auto; background: var(--md-surface-container-lowest); border-right: 1px solid var(--md-outline-variant); transition: width .18s ease; }
 .side-nav.collapsed { width: var(--side-nav-rail-width); }
 .side-nav-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .side-nav-item, .side-nav-group-toggle { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 14px; padding: 0 16px; border: 0; border-radius: var(--md-shape-full); background: transparent; color: var(--md-on-surface-variant); font-size: 13px; font-weight: 500; text-align: left; }
