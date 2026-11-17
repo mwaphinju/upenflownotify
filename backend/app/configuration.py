@@ -155,6 +155,15 @@ def with_defaults(value: dict) -> dict:
     return merged
 
 
+@router.get("/sender-ids")
+def get_sender_ids(db: Session = Depends(get_db), user: User = Depends(get_authenticated_user)):
+    """Non-secret subset of gateway config, readable by any signed-in role so Operators can
+    pick a valid Sender ID when creating rules or sending a message directly."""
+    record = db.scalar(select(SystemSetting).where(SystemSetting.key == "configuration"))
+    gateway = (with_defaults(record.value) if record else DEFAULTS)["gateway"]
+    return {"default_sender_id": gateway.get("default_sender_id"), "allowed_sender_ids": gateway.get("allowed_sender_ids") or []}
+
+
 @router.get("")
 def get_configuration(request: Request, db: Session = Depends(get_db), admin: User = Depends(require_super_admin)):
     record = db.scalar(select(SystemSetting).where(SystemSetting.key == "configuration"))

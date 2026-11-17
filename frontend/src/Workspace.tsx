@@ -102,6 +102,30 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.status === 204 ? undefined as T : response.json()
 }
 
+type SenderIds = { default_sender_id: string | null; allowed_sender_ids: string[] }
+
+function useSenderIds(): SenderIds | null {
+  const [value, setValue] = useState<SenderIds | null>(null)
+  useEffect(() => { api<SenderIds>('/api/settings/sender-ids').then(setValue).catch(() => undefined) }, [])
+  return value
+}
+
+function SenderIdField({ value, onChange, required, blankLabel }: { value: string; onChange: (value: string) => void; required?: boolean; blankLabel?: string }) {
+  const senderIds = useSenderIds()
+  if (senderIds && senderIds.allowed_sender_ids.length > 0) {
+    return (
+      <span className="select-wrap">
+        <select value={value} onChange={(event) => onChange(event.target.value)} required={required}>
+          {!value && <option value="">{blankLabel ?? 'Select a Sender ID…'}</option>}
+          {senderIds.allowed_sender_ids.map((id) => <option key={id} value={id}>{id}</option>)}
+        </select>
+        <ChevronDown size={15} />
+      </span>
+    )
+  }
+  return <input value={value} onChange={(event) => onChange(event.target.value.toUpperCase())} required={required} maxLength={11} placeholder="No Sender IDs configured yet" />
+}
+
 function RuleEditor({
   initial,
   onClose,
@@ -143,7 +167,7 @@ function RuleEditor({
           <label>Match value<input value={draft.match_value} onChange={(event) => change('match_value', event.target.value)} required maxLength={1000} placeholder={draft.match_type === 'regex' ? String.raw`Order (?P<order_no>\d+) dispatched` : 'Text to match'} /></label>
           <label>Outbound template<textarea value={draft.outbound_template} onChange={(event) => change('outbound_template', event.target.value)} required maxLength={1600} rows={3} placeholder="Your order {{order_ref}} is on its way." /></label>
           <div className="form-grid-two">
-            <label>Sender ID<input value={draft.sender_id} onChange={(event) => change('sender_id', event.target.value.toUpperCase())} required maxLength={11} /></label>
+            <label>Sender ID<SenderIdField value={draft.sender_id} onChange={(value) => change('sender_id', value)} required /></label>
             <label>Case matching<span className="select-wrap"><select value={draft.case_sensitive ? 'sensitive' : 'insensitive'} onChange={(event) => change('case_sensitive', event.target.value === 'sensitive')}><option value="insensitive">Ignore case</option><option value="sensitive">Case sensitive</option></select><ChevronDown size={15} /></span></label>
           </div>
           <label className="toggle-row"><span><strong>Rule enabled</strong><small>Disabled rules still claim matching messages.</small></span><input type="checkbox" checked={draft.is_enabled} onChange={(event) => change('is_enabled', event.target.checked)} /><span className="toggle-visual" /></label>
@@ -942,7 +966,7 @@ function SendMessageDialog({ onClose, onSent }: { onClose: () => void; onSent: (
           <label>Recipient<input value={recipient} onChange={(event) => setRecipient(event.target.value)} required placeholder="0712345678" /></label>
           <label>Message text<textarea value={text} onChange={(event) => setText(event.target.value)} required maxLength={1600} rows={3} placeholder="Your order is on its way." /><small>{text.length} characters</small></label>
           <div className="form-grid-two">
-            <label>Sender ID<input value={senderId} onChange={(event) => setSenderId(event.target.value)} maxLength={11} placeholder="Defaults to the gateway's default Sender ID" /></label>
+            <label>Sender ID<SenderIdField value={senderId} onChange={setSenderId} blankLabel="Use the gateway's default Sender ID" /></label>
             <label>Order reference (optional)<input value={orderRef} onChange={(event) => setOrderRef(event.target.value)} placeholder="ORD-4012" /></label>
           </div>
           {error && <p className="workspace-error" role="alert">{error}</p>}

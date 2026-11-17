@@ -53,3 +53,21 @@ def test_configuration_is_super_admin_only(settings_client):
 
     assert client.get("/api/settings").status_code == 403
     assert client.patch("/api/settings", json={"billing": {"cost_per_segment_kes": "1.25"}}).status_code == 403
+
+
+def test_sender_ids_endpoint_is_readable_by_any_role_without_secrets(settings_client):
+    client, app = settings_client
+    assert client.patch("/api/settings", json={
+        "gateway": {"base_url": "https://gateway.example.com/send", "api_key": "secret-key", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW", "UPENFLOW2"]},
+    }).status_code == 200
+
+    with app.state.session_factory() as db:
+        user = db.scalar(select(User).where(User.email == "admin@example.com"))
+        user.role = "viewer"
+        db.commit()
+
+    response = client.get("/api/settings/sender-ids")
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW", "UPENFLOW2"]}
+    assert "secret-key" not in response.text
