@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app import monitoring, rules
 from app.config import Settings
 from app.main import create_app
-from app.models import BlocklistEntry, InboundMessage, MappingRule, SystemSetting, User, UserSession
+from app.models import AuditLog, BlocklistEntry, InboundMessage, MappingRule, SystemSetting, User, UserSession
 from app.phone import detect_network
 from app.security import token_hash
 
@@ -154,6 +154,36 @@ def test_resend_requeues_failed_message(ops_client, monkeypatch):
         user.role = "viewer"
         db.commit()
     assert client.post(f"/api/messages/{message_id}/resend").status_code == 403
+
+
+def test_resend_is_not_double_claimable(ops_client, monkeypatch):
+    client, app = ops_client
+    assert create_rule(client).status_code == 201
+    assert configure_gateway(client).status_code == 200
+
+    class FailingAdapter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def send(self, sender_id, to, text, message_key):
+            from app.service_b import ServiceBError
+            raise ServiceBError("boom", retryable=False)
+
+    monkeypatch.setattr(rules, "ServiceBAdapter", FailingAdapter)
+    assert post_inbound(client, "resend-race-1").status_code == 202
+    with app.state.session_factory() as db:
+        message = db.scalar(select(InboundMessage).where(InboundMessage.source_message_id == "resend-race-1"))
+        assert message.status == "Failed"
+        message_id = message.id
+
+    monkeypatch.setattr(rules, "enqueue_delivery", lambda *args, **kwargs: None)
+    first = client.post(f"/api/messages/{message_id}/resend")
+    second = client.post(f"/api/messages/{message_id}/resend")
+    assert first.status_code == 200
+    assert second.status_code == 409
+    with app.state.session_factory() as db:
+        resend_logs = db.scalars(select(AuditLog).where(AuditLog.action == "message_resent", AuditLog.entity_id == str(message_id))).all()
+        assert len(resend_logs) == 1
 
 
 def test_customer_timeline_lists_messages_for_number(ops_client):

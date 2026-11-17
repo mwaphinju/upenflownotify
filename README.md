@@ -56,9 +56,60 @@ If Service B forwards inbound SMS replies, point it at `POST /api/inbound/servic
 
 The API process runs an in-process scheduler (`UPENFLOW_ENABLE_SCHEDULER=true` by default, interval `UPENFLOW_SCHEDULER_INTERVAL_SECONDS`) that re-attempts queued messages once quiet hours or a pause lifts, checks for Service A silence and Service B error-rate spikes, sends the monthly-budget alert and daily/monthly email summaries, and purges data past the configured retention window. Disable it on any secondary API replica to avoid duplicate alerts.
 
+## Database migrations
+
+Schema changes are tracked with Alembic (`backend/migrations/versions`). Revision `0001_initial_schema`
+bootstraps the schema from the current `app/models.py` via `create_all`, which means a fresh database is
+always up to date after that single revision — later revisions only need to handle databases created
+*before* a given model change shipped, so every later revision checks the database's actual state (via
+`sqlalchemy.inspect`) before altering anything, making it a safe no-op on a fresh install and a real
+migration on an older deployment. Follow this pattern for new revisions; don't assume revision 0001
+reflects a frozen historical schema.
+
+Apply migrations with `docker compose exec api alembic upgrade head` (the `api` container also runs this
+automatically on startup). Roll back one revision with `alembic downgrade -1`.
+
+## Backups and retention
+
+- **Postgres backups**: snapshot the `postgres-data` volume or run `pg_dump` on a schedule appropriate to
+  your recovery objectives (e.g. `docker compose exec postgres pg_dump -U notify notify > backup.sql`).
+  Test restores (`psql -U notify notify < backup.sql` against a fresh volume) periodically — an untested
+  backup is not a backup.
+- **Automatic data retention**: the background scheduler purges `inbound_messages` past
+  `retention.message_retention_days` and `audit_log` rows past `retention.audit_log_retention_days`
+  (Settings → Data retention; defaults 180 and 730 days). Only messages in a terminal status are purged;
+  anything still `Queued`/`Sending` is left alone regardless of age.
+- **Manual deletion**: there is currently no UI for deleting an individual customer's message history on
+  request. If a deletion/export request arrives (e.g. a data-subject request under applicable privacy law),
+  it must be handled directly against the database for now — flagged under Remaining risks below.
+
+## Production frontend build
+
+`frontend/Dockerfile` has two targets. `docker-compose.yml`'s `web` service builds the `dev` target (the
+Vite dev server), which is **not suitable for production** — it is meant for local development only. For a
+real deployment, build the `prod` target instead, which compiles the static build and serves it via nginx
+with security headers and SPA routing:
+
+```bash
+docker build --target prod -t upenflow-notify-web:prod ./frontend
+docker run -p 80:80 upenflow-notify-web:prod
+```
+
+That container serves only static assets; `/api` calls still need to reach the `api` service, so put both
+behind the same reverse proxy/ingress in production (or point the SPA at the API's own public URL).
+
 ## Security notes
 
 - No public registration endpoint exists. The first Super Admin is seeded from environment variables.
 - Passwords use Argon2id. OTPs and session tokens are stored as keyed hashes or hashes, never as plaintext.
 - Use HTTPS and set `UPENFLOW_COOKIE_SECURE=true` outside local development.
 - API secrets and SMTP credentials belong in environment variables, not source control.
+- The API sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, and
+  `Strict-Transport-Security` on every response (the last one only takes effect once served over HTTPS).
+  The production frontend (nginx `prod` target) sets the same headers plus a `Content-Security-Policy`.
+- No CORS middleware is configured, by design: the frontend and API are intended to sit behind the same
+  origin (via a reverse proxy) or to be accessed through the dev proxy locally — cookie-based auth with
+  `SameSite=Strict` would not work across a cross-site origin anyway. If you ever serve the frontend from a
+  genuinely different origin than the API, you will need to add explicit CORS configuration and reconsider
+  the cookie `SameSite` setting.
+- Dependencies are scanned in CI (`pip-audit`, `npm audit`) on every push/PR — see `.github/workflows/ci.yml`.

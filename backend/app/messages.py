@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.analytics import compute_kpis, chart_data, period_bounds, resolve_timezone
@@ -169,12 +169,18 @@ def resend_message(message_id: int, request: Request, background_tasks: Backgrou
     message = db.get(InboundMessage, message_id)
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
-    if message.status not in {"Failed", "Blocked", "Invalid recipient"}:
+    resendable_statuses = ["Failed", "Blocked", "Invalid recipient"]
+    if message.status not in resendable_statuses:
         raise HTTPException(status_code=409, detail="Only failed or blocked messages can be resent")
     before_status = message.status
-    message.status = "Queued"
-    message.status_reason = "Resent by operator"
-    message.error = None
+    claimed = db.execute(
+        update(InboundMessage)
+        .where(InboundMessage.id == message.id, InboundMessage.status.in_(resendable_statuses))
+        .values(status="Queued", status_reason="Resent by operator", error=None)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This message was already resent")
     db.add(
         AuditLog(
             actor_id=user.id,

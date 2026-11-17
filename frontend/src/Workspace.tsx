@@ -1,5 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowUp, ArrowUpRight, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, CirclePlus, Clock, Download, FlaskConical, History, KeyRound, LogOut, Pause, Pencil, Play, RefreshCw, Search, Square, Trash2, UserRound, X } from 'lucide-react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import {
+  Archive, ArrowDown, ArrowUp, ArrowUpRight, Ban, BellRing, Check, ChevronDown, ChevronLeft, ChevronRight,
+  CirclePlus, Clock, CreditCard, Download, FlaskConical, Gauge, History, KeyRound, LayoutDashboard, LogOut,
+  Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Play, RefreshCw, Route, Search,
+  Server, ShieldAlert, ShieldBan, Signal, SlidersHorizontal, Square, Trash2, UserCircle, UserRound, Users, X,
+} from 'lucide-react'
 
 type User = { name: string; email: string; role: string }
 type Rule = {
@@ -72,6 +77,9 @@ type Configuration = {
   timezone: string
   alert_emails: string[]
 }
+
+type View = 'dashboard' | 'messages' | 'rules' | 'blocklist' | 'settings' | 'users' | 'account'
+type SettingsSection = 'billing' | 'gateway' | 'limits' | 'safety' | 'quiet-hours' | 'retention' | 'monitoring' | 'network'
 
 const emptyDraft: RuleDraft = {
   name: '', priority: 10, match_type: 'contains', match_value: '', case_sensitive: false,
@@ -490,87 +498,362 @@ function BlocklistPage() {
   return <div className="account-page"><div className="page-heading"><div><div className="section-kicker">CUSTOMER SAFETY / 04</div><h1>Blocklist</h1><p>Keep opted-out and restricted numbers out of delivery.</p></div></div>{error && <div className="workspace-alert" role="alert">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss"><X size={16} /></button></div>}<form className="blocklist-form" onSubmit={addNumber}><label>Kenyan mobile number<input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="0712 345 678" required /></label><label>Reason<input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={255} placeholder="Customer opt-out" /></label><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Adding…' : 'Block number'} <Ban size={15} /></button></form><div className="section-heading"><div><span className="section-kicker">DO NOT SEND</span><h2>Blocked numbers <span>{entries.length}</span></h2></div></div><div className="users-table-wrap"><table className="users-table blocklist-table"><thead><tr><th>PHONE NUMBER</th><th>REASON</th><th>ADDED</th><th /></tr></thead><tbody>{entries.length === 0 ? <tr><td className="table-empty" colSpan={4}>No blocked numbers.</td></tr> : entries.map((entry) => <tr key={entry.id}><td className="message-phone">{entry.phone_number}</td><td>{entry.reason ?? '—'}</td><td>{new Date(entry.created_at).toLocaleDateString()}</td><td><button className="quiet-icon" type="button" title="Unblock number" onClick={() => void removeEntry(entry)}><X size={15} /></button></td></tr>)}</tbody></table></div></div>
 }
 
-function SettingsPage() {
-  const [config, setConfig] = useState<Configuration | null>(null)
-  const [apiKey, setApiKey] = useState('')
-  const [slackWebhook, setSlackWebhook] = useState('')
-  const [telegramToken, setTelegramToken] = useState('')
-  const [allowedSenders, setAllowedSenders] = useState('UPENFLOW')
-  const [testAllowlist, setTestAllowlist] = useState('')
-  const [alertEmails, setAlertEmails] = useState('')
-  const [networkPrefixes, setNetworkPrefixes] = useState<Record<string, string>>({})
+function SettingsPageShell({ kicker, title, description, notice, error, onDismiss, children }: {
+  kicker: string; title: string; description: string; notice: string; error: string; onDismiss: () => void; children: ReactNode
+}) {
+  return (
+    <div className="settings-page-single">
+      <div className="page-heading"><div><div className="section-kicker">{kicker}</div><h1>{title}</h1><p>{description}</p></div></div>
+      {(notice || error) && <div className={error ? 'workspace-alert' : 'workspace-notice'} role="status">{error || notice}<button type="button" onClick={onDismiss} aria-label="Dismiss"><X size={16} /></button></div>}
+      {children}
+    </div>
+  )
+}
+
+function useConfigSlice<T>(select: (config: Configuration) => T) {
+  const [value, setValue] = useState<T | null>(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    api<Configuration>('/api/settings').then((config) => setValue(select(config))).catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to load settings.')).finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return { value, setValue, error, setError, loading }
+}
+
+function BillingSettingsPage() {
+  const { value: billing, setValue: setBilling, error, setError, loading } = useConfigSlice((config) => config.billing)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
-  const [error, setError] = useState('')
 
-  function applyConfig(value: Configuration) {
-    setConfig(value)
-    setAllowedSenders(value.gateway.allowed_sender_ids.join(', '))
-    setTestAllowlist(value.safety.test_allowlist.join(', '))
-    setAlertEmails(value.alert_emails.join(', '))
-    setNetworkPrefixes(Object.fromEntries(Object.entries(value.network_prefixes).map(([network, prefixes]) => [network, prefixes.join(', ')])))
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!billing) return
+    setSaving(true); setError(''); setNotice('')
+    try {
+      const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ billing }) })
+      setBilling(updated.billing); setNotice('Billing settings saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save billing settings.') }
+    finally { setSaving(false) }
   }
 
+  return (
+    <SettingsPageShell kicker="SETTINGS / BILLING" title="Billing" description="What each SMS segment costs and when to alert on spend." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !billing ? <div className="dashboard-loading">Loading billing settings…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              <label>Cost per SMS segment<input type="number" min="0" step="0.01" value={billing.cost_per_segment_kes} onChange={(event) => setBilling({ ...billing, cost_per_segment_kes: event.target.value })} /></label>
+              <label>Currency<input maxLength={3} value={billing.currency} onChange={(event) => setBilling({ ...billing, currency: event.target.value.toUpperCase() })} /></label>
+              <label>Monthly budget<input type="number" min="0" step="0.01" value={billing.monthly_budget_kes} onChange={(event) => setBilling({ ...billing, monthly_budget_kes: event.target.value })} /></label>
+              <label>Budget alert threshold (%)<input type="number" min="1" max="100" value={billing.alert_threshold_percent} onChange={(event) => setBilling({ ...billing, alert_threshold_percent: Number(event.target.value) })} /></label>
+            </div>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save billing'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
+
+function GatewaySettingsPage() {
+  const { value: gateway, setValue: setGateway, error, setError, loading } = useConfigSlice((config) => config.gateway)
+  const [allowedSenders, setAllowedSenders] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => { if (gateway) setAllowedSenders(gateway.allowed_sender_ids.join(', ')) }, [gateway])
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!gateway) return
+    setSaving(true); setError(''); setNotice('')
+    const senders = allowedSenders.split(',').map((value) => value.trim().toUpperCase()).filter(Boolean)
+    const payload = {
+      base_url: gateway.base_url || null, username: gateway.username || null, default_sender_id: gateway.default_sender_id,
+      allowed_sender_ids: senders, ...(apiKey ? { api_key: apiKey } : {}),
+    }
+    try {
+      const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ gateway: payload }) })
+      setGateway(updated.gateway); setApiKey(''); setNotice('Gateway settings saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save gateway settings.') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <SettingsPageShell kicker="SETTINGS / GATEWAY" title="Gateway connection" description="Service B base URL, credentials, and registered Sender IDs." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !gateway ? <div className="dashboard-loading">Loading gateway settings…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              <label>Base URL<input type="url" value={gateway.base_url ?? ''} onChange={(event) => setGateway({ ...gateway, base_url: event.target.value })} placeholder="https://gateway.example.com" /></label>
+              <label>Username<input value={gateway.username ?? ''} onChange={(event) => setGateway({ ...gateway, username: event.target.value })} /></label>
+              <label>Default Sender ID<input value={gateway.default_sender_id} onChange={(event) => setGateway({ ...gateway, default_sender_id: event.target.value.toUpperCase() })} maxLength={11} /></label>
+              <label>Allowed Sender IDs<input value={allowedSenders} onChange={(event) => setAllowedSenders(event.target.value)} placeholder="UPENFLOW, UPENFLOW2" /><small>Separate registered IDs with commas.</small></label>
+              <label className="secret-field wide-setting">API key <span>{gateway.has_api_key ? 'Saved key is masked' : 'No key saved'}</span><input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={gateway.has_api_key ? 'Enter a new key to rotate' : 'Enter gateway API key'} /></label>
+            </div>
+            <p className="inline-instruction">Service A and Service B credentials will be supplied once the real gateway is connected; these fields accept them without a redeploy.</p>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save gateway'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
+
+function LimitsSettingsPage() {
+  const { value: limits, setValue: setLimits, error, setError, loading } = useConfigSlice((config) => config.limits)
+  const [timezone, setTimezone] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [configLoaded, setConfigLoaded] = useState(false)
+
   useEffect(() => {
-    api<Configuration>('/api/settings').then(applyConfig).catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to load settings.'))
+    api<Configuration>('/api/settings').then((config) => setTimezone(config.timezone)).catch(() => undefined).finally(() => setConfigLoaded(true))
   }, [])
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!config) return
+    if (!limits) return
     setSaving(true); setError(''); setNotice('')
-    const senders = allowedSenders.split(',').map((value) => value.trim().toUpperCase()).filter(Boolean)
-    const gateway = {
-      base_url: config.gateway.base_url || null,
-      username: config.gateway.username || null,
-      default_sender_id: config.gateway.default_sender_id,
-      allowed_sender_ids: senders,
-      ...(apiKey ? { api_key: apiKey } : {}),
-    }
-    const monitoring = {
-      ...config.monitoring,
-      ...(slackWebhook ? { slack_webhook_url: slackWebhook } : {}),
-      ...(telegramToken ? { telegram_bot_token: telegramToken } : {}),
-    }
-    const network_prefixes = Object.fromEntries(
-      Object.entries(networkPrefixes).map(([network, value]) => [network, value.split(',').map((prefix) => prefix.trim()).filter(Boolean)])
-    )
     try {
-      const updated = await api<Configuration>('/api/settings', {
-        method: 'PATCH',
-        body: JSON.stringify({
-          billing: config.billing, gateway, limits: config.limits,
-          safety: { ...config.safety, test_allowlist: testAllowlist.split(',').map((number) => number.trim()).filter(Boolean) },
-          quiet_hours: config.quiet_hours, retention: config.retention, monitoring, network_prefixes,
-          alert_emails: alertEmails.split(',').map((email) => email.trim()).filter(Boolean),
-          timezone: config.timezone,
-        }),
-      })
-      applyConfig(updated); setApiKey(''); setSlackWebhook(''); setTelegramToken(''); setNotice('Settings saved and audit-logged.')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save settings.') }
+      const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ limits, timezone }) })
+      setLimits(updated.limits); setTimezone(updated.timezone); setNotice('Delivery limits saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save delivery limits.') }
     finally { setSaving(false) }
   }
 
-  if (!config) return <div className="account-page"><div className="dashboard-loading">Loading settings…</div>{error && <div className="workspace-alert">{error}</div>}</div>
-  const updateBilling = (key: keyof Configuration['billing'], value: string | number) => setConfig({ ...config, billing: { ...config.billing, [key]: value } })
-  const updateGateway = (key: 'base_url' | 'username' | 'default_sender_id', value: string) => setConfig({ ...config, gateway: { ...config.gateway, [key]: value } })
-  const updateLimits = (key: keyof Configuration['limits'], value: number) => setConfig({ ...config, limits: { ...config.limits, [key]: value } })
-  const updateSafety = (key: keyof Configuration['safety'], value: number | boolean) => setConfig({ ...config, safety: { ...config.safety, [key]: value } })
-  const updateQuietHours = (key: keyof Configuration['quiet_hours'], value: string | boolean) => setConfig({ ...config, quiet_hours: { ...config.quiet_hours, [key]: value } })
-  const updateRetention = (key: keyof Configuration['retention'], value: number) => setConfig({ ...config, retention: { ...config.retention, [key]: value } })
-  const updateMonitoring = (key: 'service_a_silence_minutes' | 'error_rate_threshold_percent' | 'low_credit_kes' | 'telegram_chat_id' | 'oncall_phone', value: string | number) => setConfig({ ...config, monitoring: { ...config.monitoring, [key]: value } })
+  return (
+    <SettingsPageShell kicker="SETTINGS / LIMITS" title="Delivery limits" description="Send rate, segment cap, retries, and the workspace timezone." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !limits || !configLoaded ? <div className="dashboard-loading">Loading delivery limits…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              <label>Send rate (SMS/second)<input type="number" min="1" value={limits.send_rate_per_second} onChange={(event) => setLimits({ ...limits, send_rate_per_second: Number(event.target.value) })} /></label>
+              <label>Maximum segments<input type="number" min="1" max="3" value={limits.max_segments} onChange={(event) => setLimits({ ...limits, max_segments: Number(event.target.value) })} /></label>
+              <label>Stale queue cutoff (minutes)<input type="number" min="1" value={limits.stale_queue_minutes} onChange={(event) => setLimits({ ...limits, stale_queue_minutes: Number(event.target.value) })} /></label>
+              <label>Retry attempts<input type="number" min="1" max="10" value={limits.retry_attempts} onChange={(event) => setLimits({ ...limits, retry_attempts: Number(event.target.value) })} /></label>
+              <label>Timezone<input value={timezone} onChange={(event) => setTimezone(event.target.value)} /></label>
+            </div>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save limits'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
 
-  return <div className="account-page settings-page"><div className="page-heading"><div><div className="section-kicker">SYSTEM / 05</div><h1>Settings</h1><p>Configure billing, gateway access, and message limits.</p></div></div>{(notice || error) && <div className={error ? 'workspace-alert' : 'workspace-notice'} role="status">{error || notice}<button type="button" onClick={() => { setError(''); setNotice('') }} aria-label="Dismiss"><X size={16} /></button></div>}<form onSubmit={save}>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">BILLING</span><h2>SMS costs</h2></div></div><div className="settings-grid"><label>Cost per SMS segment<input type="number" min="0" step="0.01" value={config.billing.cost_per_segment_kes} onChange={(event) => updateBilling('cost_per_segment_kes', event.target.value)} /></label><label>Currency<input maxLength={3} value={config.billing.currency} onChange={(event) => updateBilling('currency', event.target.value.toUpperCase())} /></label><label>Monthly budget<input type="number" min="0" step="0.01" value={config.billing.monthly_budget_kes} onChange={(event) => updateBilling('monthly_budget_kes', event.target.value)} /></label><label>Budget alert threshold (%)<input type="number" min="1" max="100" value={config.billing.alert_threshold_percent} onChange={(event) => updateBilling('alert_threshold_percent', Number(event.target.value))} /></label></div></section>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">SERVICE B</span><h2>Gateway connection</h2></div></div><div className="settings-grid"><label>Base URL<input type="url" value={config.gateway.base_url ?? ''} onChange={(event) => updateGateway('base_url', event.target.value)} placeholder="https://gateway.example.com" /></label><label>Username<input value={config.gateway.username ?? ''} onChange={(event) => updateGateway('username', event.target.value)} /></label><label>Default Sender ID<input value={config.gateway.default_sender_id} onChange={(event) => updateGateway('default_sender_id', event.target.value.toUpperCase())} maxLength={11} /></label><label>Allowed Sender IDs<input value={allowedSenders} onChange={(event) => setAllowedSenders(event.target.value)} placeholder="UPENFLOW, UPENFLOW2" /><small>Separate registered IDs with commas.</small></label><label className="secret-field">API key <span>{config.gateway.has_api_key ? 'Saved key is masked' : 'No key saved'}</span><input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={config.gateway.has_api_key ? 'Enter a new key to rotate' : 'Enter gateway API key'} /></label></div><p className="inline-instruction">Service A and Service B credentials will be supplied once the real gateway is connected; these fields accept them without a redeploy.</p></section>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">DELIVERY LIMITS</span><h2>Queue and retries</h2></div></div><div className="settings-grid"><label>Send rate (SMS/second)<input type="number" min="1" value={config.limits.send_rate_per_second} onChange={(event) => updateLimits('send_rate_per_second', Number(event.target.value))} /></label><label>Maximum segments<input type="number" min="1" max="3" value={config.limits.max_segments} onChange={(event) => updateLimits('max_segments', Number(event.target.value))} /></label><label>Stale queue cutoff (minutes)<input type="number" min="1" value={config.limits.stale_queue_minutes} onChange={(event) => updateLimits('stale_queue_minutes', Number(event.target.value))} /></label><label>Retry attempts<input type="number" min="1" max="10" value={config.limits.retry_attempts} onChange={(event) => updateLimits('retry_attempts', Number(event.target.value))} /></label><label>Timezone<input value={config.timezone} onChange={(event) => setConfig({ ...config, timezone: event.target.value })} /></label></div></section>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">CUSTOMER SAFEGUARDS</span><h2>Throttle and test mode</h2></div></div><div className="settings-grid"><label>Maximum SMS per recipient / hour<input type="number" min="1" value={config.safety.max_per_recipient_hour} onChange={(event) => updateSafety('max_per_recipient_hour', Number(event.target.value))} /></label><label>Duplicate content window (minutes)<input type="number" min="1" value={config.safety.duplicate_window_minutes} onChange={(event) => updateSafety('duplicate_window_minutes', Number(event.target.value))} /></label><label className="config-toggle"><span><strong>Test mode</strong><small>Only send to allowlisted numbers.</small></span><input type="checkbox" checked={config.safety.test_mode} onChange={(event) => updateSafety('test_mode', event.target.checked)} /></label><label className="config-toggle"><span><strong>Fake gateway</strong><small>Record test sends without delivery.</small></span><input type="checkbox" checked={config.safety.fake_gateway} onChange={(event) => updateSafety('fake_gateway', event.target.checked)} /></label><label className="wide-setting">Test number allowlist<input value={testAllowlist} onChange={(event) => setTestAllowlist(event.target.value)} placeholder="0712345678, 254110123456" /><small>Only Kenyan mobile numbers are accepted.</small></label></div></section>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">QUIET HOURS</span><h2>Hold sends overnight</h2></div></div><div className="settings-grid"><label className="config-toggle"><span><strong>Enable quiet hours</strong><small>Queue messages during the window below.</small></span><input type="checkbox" checked={config.quiet_hours.enabled} onChange={(event) => updateQuietHours('enabled', event.target.checked)} /></label><label>Start (HH:MM, local time)<input value={config.quiet_hours.start} onChange={(event) => updateQuietHours('start', event.target.value)} placeholder="21:00" /></label><label>End (HH:MM, local time)<input value={config.quiet_hours.end} onChange={(event) => updateQuietHours('end', event.target.value)} placeholder="07:00" /></label></div></section>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">DATA RETENTION</span><h2>Automatic cleanup</h2></div></div><div className="settings-grid"><label>Message retention (days)<input type="number" min="1" value={config.retention.message_retention_days} onChange={(event) => updateRetention('message_retention_days', Number(event.target.value))} /></label><label>Audit log retention (days)<input type="number" min="1" value={config.retention.audit_log_retention_days} onChange={(event) => updateRetention('audit_log_retention_days', Number(event.target.value))} /></label></div></section>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">MONITORING &amp; ALERTS</span><h2>Who gets paged</h2></div></div><div className="settings-grid"><label className="wide-setting">Alert emails<input value={alertEmails} onChange={(event) => setAlertEmails(event.target.value)} placeholder="ops@upenflow.co.ke, oncall@upenflow.co.ke" /></label><label>Service A silence alert (minutes)<input type="number" min="1" value={config.monitoring.service_a_silence_minutes} onChange={(event) => updateMonitoring('service_a_silence_minutes', Number(event.target.value))} /></label><label>Service B error-rate threshold (%)<input type="number" min="1" max="100" value={config.monitoring.error_rate_threshold_percent} onChange={(event) => updateMonitoring('error_rate_threshold_percent', Number(event.target.value))} /></label><label>Low credit threshold (KES)<input type="number" min="0" value={config.monitoring.low_credit_kes} onChange={(event) => updateMonitoring('low_credit_kes', event.target.value)} /></label><label>On-call SMS number<input value={config.monitoring.oncall_phone ?? ''} onChange={(event) => updateMonitoring('oncall_phone', event.target.value)} placeholder="0712345678" /></label><label className="secret-field">Slack webhook <span>{config.monitoring.has_slack_webhook ? 'Saved webhook is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={slackWebhook} onChange={(event) => setSlackWebhook(event.target.value)} placeholder={config.monitoring.has_slack_webhook ? 'Enter a new URL to rotate' : 'https://hooks.slack.com/...'} /></label><label className="secret-field">Telegram bot token <span>{config.monitoring.has_telegram_bot_token ? 'Saved token is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder={config.monitoring.has_telegram_bot_token ? 'Enter a new token to rotate' : 'Bot token'} /></label><label>Telegram chat ID<input value={config.monitoring.telegram_chat_id ?? ''} onChange={(event) => updateMonitoring('telegram_chat_id', event.target.value)} /></label></div></section>
-    <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">NETWORK PREFIXES</span><h2>Carrier detection table</h2></div></div><div className="settings-grid">{Object.entries(networkPrefixes).map(([network, value]) => <label className="wide-setting" key={network}>{network} prefixes<input value={value} onChange={(event) => setNetworkPrefixes({ ...networkPrefixes, [network]: event.target.value })} /></label>)}</div></section>
-    <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save settings'} <Check size={15} /></button></div>
-  </form></div>
+function SafeguardsSettingsPage() {
+  const { value: safety, setValue: setSafety, error, setError, loading } = useConfigSlice((config) => config.safety)
+  const [testAllowlist, setTestAllowlist] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => { if (safety) setTestAllowlist(safety.test_allowlist.join(', ')) }, [safety])
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!safety) return
+    setSaving(true); setError(''); setNotice('')
+    const payload = { ...safety, test_allowlist: testAllowlist.split(',').map((number) => number.trim()).filter(Boolean) }
+    try {
+      const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ safety: payload }) })
+      setSafety(updated.safety); setNotice('Customer safeguards saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save customer safeguards.') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <SettingsPageShell kicker="SETTINGS / SAFEGUARDS" title="Customer safeguards" description="Throttling, duplicate protection, and test mode." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !safety ? <div className="dashboard-loading">Loading safeguards…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              <label>Maximum SMS per recipient / hour<input type="number" min="1" value={safety.max_per_recipient_hour} onChange={(event) => setSafety({ ...safety, max_per_recipient_hour: Number(event.target.value) })} /></label>
+              <label>Duplicate content window (minutes)<input type="number" min="1" value={safety.duplicate_window_minutes} onChange={(event) => setSafety({ ...safety, duplicate_window_minutes: Number(event.target.value) })} /></label>
+              <label className="config-toggle"><span><strong>Test mode</strong><small>Only send to allowlisted numbers.</small></span><input type="checkbox" checked={safety.test_mode} onChange={(event) => setSafety({ ...safety, test_mode: event.target.checked })} /></label>
+              <label className="config-toggle"><span><strong>Fake gateway</strong><small>Record test sends without delivery.</small></span><input type="checkbox" checked={safety.fake_gateway} onChange={(event) => setSafety({ ...safety, fake_gateway: event.target.checked })} /></label>
+              <label className="wide-setting">Test number allowlist<input value={testAllowlist} onChange={(event) => setTestAllowlist(event.target.value)} placeholder="0712345678, 254110123456" /><small>Only Kenyan mobile numbers are accepted.</small></label>
+            </div>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save safeguards'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
+
+function QuietHoursSettingsPage() {
+  const { value: quietHours, setValue: setQuietHours, error, setError, loading } = useConfigSlice((config) => config.quiet_hours)
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!quietHours) return
+    setSaving(true); setError(''); setNotice('')
+    try {
+      const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ quiet_hours: quietHours }) })
+      setQuietHours(updated.quiet_hours); setNotice('Quiet hours saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save quiet hours.') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <SettingsPageShell kicker="SETTINGS / QUIET HOURS" title="Quiet hours" description="Hold outbound sends overnight, resuming automatically once the window ends." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !quietHours ? <div className="dashboard-loading">Loading quiet hours…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              <label className="config-toggle wide-setting"><span><strong>Enable quiet hours</strong><small>Queue messages during the window below.</small></span><input type="checkbox" checked={quietHours.enabled} onChange={(event) => setQuietHours({ ...quietHours, enabled: event.target.checked })} /></label>
+              <label>Start (HH:MM, local time)<input value={quietHours.start} onChange={(event) => setQuietHours({ ...quietHours, start: event.target.value })} placeholder="21:00" /></label>
+              <label>End (HH:MM, local time)<input value={quietHours.end} onChange={(event) => setQuietHours({ ...quietHours, end: event.target.value })} placeholder="07:00" /></label>
+            </div>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save quiet hours'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
+
+function RetentionSettingsPage() {
+  const { value: retention, setValue: setRetention, error, setError, loading } = useConfigSlice((config) => config.retention)
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!retention) return
+    setSaving(true); setError(''); setNotice('')
+    try {
+      const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ retention }) })
+      setRetention(updated.retention); setNotice('Data retention saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save data retention.') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <SettingsPageShell kicker="SETTINGS / RETENTION" title="Data retention" description="How long messages and audit history are kept before automatic cleanup." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !retention ? <div className="dashboard-loading">Loading retention settings…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              <label>Message retention (days)<input type="number" min="1" value={retention.message_retention_days} onChange={(event) => setRetention({ ...retention, message_retention_days: Number(event.target.value) })} /></label>
+              <label>Audit log retention (days)<input type="number" min="1" value={retention.audit_log_retention_days} onChange={(event) => setRetention({ ...retention, audit_log_retention_days: Number(event.target.value) })} /></label>
+            </div>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save retention'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
+
+function MonitoringSettingsPage() {
+  const { value: monitoring, setValue: setMonitoring, error, setError, loading } = useConfigSlice((config) => config.monitoring)
+  const [alertEmails, setAlertEmails] = useState('')
+  const [slackWebhook, setSlackWebhook] = useState('')
+  const [telegramToken, setTelegramToken] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    api<Configuration>('/api/settings').then((config) => setAlertEmails(config.alert_emails.join(', '))).catch(() => undefined)
+  }, [])
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!monitoring) return
+    setSaving(true); setError(''); setNotice('')
+    const payload = {
+      ...monitoring,
+      ...(slackWebhook ? { slack_webhook_url: slackWebhook } : {}),
+      ...(telegramToken ? { telegram_bot_token: telegramToken } : {}),
+    }
+    try {
+      const updated = await api<Configuration>('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ monitoring: payload, alert_emails: alertEmails.split(',').map((email) => email.trim()).filter(Boolean) }),
+      })
+      setMonitoring(updated.monitoring); setAlertEmails(updated.alert_emails.join(', ')); setSlackWebhook(''); setTelegramToken(''); setNotice('Monitoring & alerts saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save monitoring settings.') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <SettingsPageShell kicker="SETTINGS / MONITORING" title="Monitoring & alerts" description="Who gets paged, and over which channels, when something needs attention." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !monitoring ? <div className="dashboard-loading">Loading monitoring settings…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              <label className="wide-setting">Alert emails<input value={alertEmails} onChange={(event) => setAlertEmails(event.target.value)} placeholder="ops@upenflow.co.ke, oncall@upenflow.co.ke" /></label>
+              <label>Service A silence alert (minutes)<input type="number" min="1" value={monitoring.service_a_silence_minutes} onChange={(event) => setMonitoring({ ...monitoring, service_a_silence_minutes: Number(event.target.value) })} /></label>
+              <label>Service B error-rate threshold (%)<input type="number" min="1" max="100" value={monitoring.error_rate_threshold_percent} onChange={(event) => setMonitoring({ ...monitoring, error_rate_threshold_percent: Number(event.target.value) })} /></label>
+              <label>Low credit threshold (KES)<input type="number" min="0" value={monitoring.low_credit_kes} onChange={(event) => setMonitoring({ ...monitoring, low_credit_kes: event.target.value })} /></label>
+              <label>On-call SMS number<input value={monitoring.oncall_phone ?? ''} onChange={(event) => setMonitoring({ ...monitoring, oncall_phone: event.target.value })} placeholder="0712345678" /></label>
+              <label className="secret-field">Slack webhook <span>{monitoring.has_slack_webhook ? 'Saved webhook is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={slackWebhook} onChange={(event) => setSlackWebhook(event.target.value)} placeholder={monitoring.has_slack_webhook ? 'Enter a new URL to rotate' : 'https://hooks.slack.com/...'} /></label>
+              <label className="secret-field">Telegram bot token <span>{monitoring.has_telegram_bot_token ? 'Saved token is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder={monitoring.has_telegram_bot_token ? 'Enter a new token to rotate' : 'Bot token'} /></label>
+              <label>Telegram chat ID<input value={monitoring.telegram_chat_id ?? ''} onChange={(event) => setMonitoring({ ...monitoring, telegram_chat_id: event.target.value })} /></label>
+            </div>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save monitoring'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
+
+function NetworkPrefixesSettingsPage() {
+  const { value: networkPrefixes, setValue: setNetworkPrefixes, error, setError, loading } = useConfigSlice(
+    (config) => Object.fromEntries(Object.entries(config.network_prefixes).map(([network, prefixes]) => [network, prefixes.join(', ')]))
+  )
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!networkPrefixes) return
+    setSaving(true); setError(''); setNotice('')
+    const payload = Object.fromEntries(
+      Object.entries(networkPrefixes).map(([network, value]) => [network, value.split(',').map((prefix) => prefix.trim()).filter(Boolean)])
+    )
+    try {
+      const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ network_prefixes: payload }) })
+      setNetworkPrefixes(Object.fromEntries(Object.entries(updated.network_prefixes).map(([network, prefixes]) => [network, prefixes.join(', ')])))
+      setNotice('Network prefixes saved and audit-logged.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save network prefixes.') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <SettingsPageShell kicker="SETTINGS / NETWORK" title="Network prefixes" description="The carrier-detection table used to tag messages Safaricom, Airtel, or Telkom." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {loading || !networkPrefixes ? <div className="dashboard-loading">Loading network prefixes…</div> : (
+        <form className="settings-form-page" onSubmit={save}>
+          <section className="md-card">
+            <div className="settings-grid">
+              {Object.entries(networkPrefixes).map(([network, value]) => <label className="wide-setting" key={network}>{network} prefixes<input value={value} onChange={(event) => setNetworkPrefixes({ ...networkPrefixes, [network]: event.target.value })} /></label>)}
+            </div>
+          </section>
+          <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save network prefixes'} <Check size={15} /></button></div>
+        </form>
+      )}
+    </SettingsPageShell>
+  )
+}
+
+function SettingsRouter({ section }: { section: SettingsSection }) {
+  switch (section) {
+    case 'billing': return <BillingSettingsPage />
+    case 'gateway': return <GatewaySettingsPage />
+    case 'limits': return <LimitsSettingsPage />
+    case 'safety': return <SafeguardsSettingsPage />
+    case 'quiet-hours': return <QuietHoursSettingsPage />
+    case 'retention': return <RetentionSettingsPage />
+    case 'monitoring': return <MonitoringSettingsPage />
+    case 'network': return <NetworkPrefixesSettingsPage />
+  }
 }
 
 function SendingBanner({ isAdmin }: { isAdmin: boolean }) {
@@ -837,34 +1120,137 @@ function DashboardPage() {
   </div>
 }
 
+const SETTINGS_NAV_ITEMS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
+  { id: 'billing', label: 'Billing', icon: <CreditCard size={17} /> },
+  { id: 'gateway', label: 'Gateway', icon: <Server size={17} /> },
+  { id: 'limits', label: 'Delivery limits', icon: <Gauge size={17} /> },
+  { id: 'safety', label: 'Safeguards', icon: <ShieldAlert size={17} /> },
+  { id: 'quiet-hours', label: 'Quiet hours', icon: <Moon size={17} /> },
+  { id: 'retention', label: 'Data retention', icon: <Archive size={17} /> },
+  { id: 'monitoring', label: 'Monitoring & alerts', icon: <BellRing size={17} /> },
+  { id: 'network', label: 'Network prefixes', icon: <Signal size={17} /> },
+]
+
+function NavButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
+  return (
+    <li>
+      <button className={active ? 'side-nav-item selected' : 'side-nav-item'} type="button" aria-current={active ? 'page' : undefined} onClick={onClick}>
+        {icon}<span className="side-nav-label">{label}</span>
+      </button>
+    </li>
+  )
+}
+
+function Sidebar({
+  view, setView, settingsSection, setSettingsSection, collapsed, settingsOpen, setSettingsOpen, role, mobileOpen, onNavigate,
+}: {
+  view: View; setView: (view: View) => void; settingsSection: SettingsSection; setSettingsSection: (section: SettingsSection) => void
+  collapsed: boolean; settingsOpen: boolean; setSettingsOpen: (updater: (value: boolean) => boolean) => void
+  role: string; mobileOpen: boolean; onNavigate: () => void
+}) {
+  const isSuperAdmin = role === 'super_admin'
+  const canManage = role === 'super_admin' || role === 'operator'
+
+  function go(next: View) { setView(next); onNavigate() }
+  function goSettings(section: SettingsSection) { setView('settings'); setSettingsSection(section); onNavigate() }
+  function toggleSettingsGroup() { setSettingsOpen((value) => !value) }
+
+  return (
+    <nav className={`side-nav${collapsed ? ' collapsed' : ''}${mobileOpen ? ' mobile-open' : ''}`} aria-label="Primary">
+      <ul className="side-nav-list">
+        <NavButton active={view === 'dashboard'} icon={<LayoutDashboard size={18} />} label="Dashboard" onClick={() => go('dashboard')} />
+        <NavButton active={view === 'messages'} icon={<MessageSquare size={18} />} label="Notifications" onClick={() => go('messages')} />
+        <NavButton active={view === 'rules'} icon={<Route size={18} />} label="Rules" onClick={() => go('rules')} />
+        {canManage && <NavButton active={view === 'blocklist'} icon={<ShieldBan size={18} />} label="Blocklist" onClick={() => go('blocklist')} />}
+        {isSuperAdmin && (
+          <li className="side-nav-group">
+            <button
+              className="side-nav-item side-nav-group-toggle"
+              type="button"
+              aria-expanded={settingsOpen}
+              aria-controls="settings-subnav"
+              onClick={toggleSettingsGroup}
+            >
+              <SlidersHorizontal size={18} /><span className="side-nav-label">Settings</span>
+              <ChevronDown size={14} className={settingsOpen ? 'side-nav-chevron open' : 'side-nav-chevron'} />
+            </button>
+            <ul id="settings-subnav" className="side-nav-sublist" hidden={!settingsOpen || collapsed}>
+              {SETTINGS_NAV_ITEMS.map((item) => (
+                <li key={item.id}>
+                  <button
+                    className={view === 'settings' && settingsSection === item.id ? 'side-nav-subitem selected' : 'side-nav-subitem'}
+                    type="button"
+                    aria-current={view === 'settings' && settingsSection === item.id ? 'page' : undefined}
+                    onClick={() => goSettings(item.id)}
+                  >
+                    {item.icon}<span className="side-nav-label">{item.label}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </li>
+        )}
+        {isSuperAdmin && <NavButton active={view === 'users'} icon={<Users size={18} />} label="Users" onClick={() => go('users')} />}
+        <NavButton active={view === 'account'} icon={<UserCircle size={18} />} label="My account" onClick={() => go('account')} />
+      </ul>
+    </nav>
+  )
+}
+
 export default function Workspace({ user, onSignOut }: { user: User; onSignOut: () => void }) {
-  const [view, setView] = useState<'rules' | 'users' | 'account' | 'messages' | 'dashboard' | 'settings' | 'blocklist'>('rules')
+  const [view, setView] = useState<View>('dashboard')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('billing')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('upenflow-nav-collapsed') === '1' } catch { return false }
+  })
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [currentUser, setCurrentUser] = useState(user)
   const canEdit = currentUser.role === 'super_admin' || currentUser.role === 'operator'
+
+  function toggleCollapsed() {
+    setCollapsed((value) => {
+      const next = !value
+      try { localStorage.setItem('upenflow-nav-collapsed', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }
+
   return (
-    <main className="workspace-shell">
-      <header className="workspace-header">
+    <div className="app-shell">
+      <header className="app-bar">
+        <button className="icon-button nav-toggle mobile-only" type="button" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
+        <button className="icon-button nav-toggle desktop-only" type="button" aria-expanded={!collapsed} aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'} onClick={toggleCollapsed}>
+          {collapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
+        </button>
         <a className="wordmark" href="/" aria-label="Upenflow Notify"><span className="brand-mark"><span /></span><span>upenflow<span className="wordmark-light"> notify</span></span></a>
-        <nav className="workspace-nav" aria-label="Primary navigation">
-          <button className={view === 'dashboard' ? 'nav-item selected' : 'nav-item'} type="button" onClick={() => setView('dashboard')}>Dashboard</button>
-          <button className={view === 'messages' ? 'nav-item selected' : 'nav-item'} type="button" onClick={() => setView('messages')}>Notifications</button>
-          <button className={view === 'rules' ? 'nav-item selected' : 'nav-item'} type="button" onClick={() => setView('rules')}>Rules</button>
-          {(currentUser.role === 'super_admin' || currentUser.role === 'operator') && <button className={view === 'blocklist' ? 'nav-item selected' : 'nav-item'} type="button" onClick={() => setView('blocklist')}>Blocklist</button>}
-          {currentUser.role === 'super_admin' && <><button className={view === 'users' ? 'nav-item selected' : 'nav-item'} type="button" onClick={() => setView('users')}>Users</button><button className={view === 'settings' ? 'nav-item selected' : 'nav-item'} type="button" onClick={() => setView('settings')}>Settings</button></>}
-          <button className={view === 'account' ? 'nav-item selected' : 'nav-item'} type="button" onClick={() => setView('account')}>My account</button>
-        </nav>
-        <div className="workspace-user"><span className="user-initial">{currentUser.name.slice(0, 1).toUpperCase()}</span><span className="user-meta"><strong>{currentUser.name}</strong><small>{currentUser.role.replace('_', ' ')}</small></span><button className="quiet-icon" type="button" title="Sign out" onClick={onSignOut}><LogOut size={17} /></button></div>
+        <div className="app-bar-spacer" />
+        <div className="workspace-user">
+          <span className="user-initial">{currentUser.name.slice(0, 1).toUpperCase()}</span>
+          <span className="user-meta"><strong>{currentUser.name}</strong><small>{currentUser.role.replace('_', ' ')}</small></span>
+          <button className="icon-button" type="button" title="Sign out" aria-label="Sign out" onClick={onSignOut}><LogOut size={18} /></button>
+        </div>
       </header>
       <SendingBanner isAdmin={currentUser.role === 'super_admin'} />
-      {view === 'rules' && <RulesPage canEdit={canEdit} />}
-      {view === 'messages' && <NotificationsPage canExport={currentUser.role === 'super_admin' || currentUser.role === 'operator'} />}
-      {view === 'dashboard' && <DashboardPage />}
-      {view === 'users' && currentUser.role === 'super_admin' && <UsersPage />}
-      {view === 'settings' && currentUser.role === 'super_admin' && <SettingsPage />}
-      {view === 'blocklist' && (currentUser.role === 'super_admin' || currentUser.role === 'operator') && <BlocklistPage />}
-      {view === 'account' && <AccountPage user={currentUser} onUserUpdated={setCurrentUser} />}
-      <footer className="workspace-footer"><span>UPENFLOW NOTIFY</span><span>RULES ARE VERSIONED WHEN CHANGED</span></footer>
-    </main>
+      <div className="app-body">
+        {mobileOpen && <div className="nav-backdrop" role="presentation" onClick={() => setMobileOpen(false)} />}
+        <Sidebar
+          view={view} setView={setView} settingsSection={settingsSection} setSettingsSection={setSettingsSection}
+          collapsed={collapsed} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen}
+          role={currentUser.role} mobileOpen={mobileOpen} onNavigate={() => setMobileOpen(false)}
+        />
+        <main className="main-content" id="main-content">
+          {view === 'rules' && <RulesPage canEdit={canEdit} />}
+          {view === 'messages' && <NotificationsPage canExport={currentUser.role === 'super_admin' || currentUser.role === 'operator'} />}
+          {view === 'dashboard' && <DashboardPage />}
+          {view === 'users' && currentUser.role === 'super_admin' && <UsersPage />}
+          {view === 'settings' && currentUser.role === 'super_admin' && <SettingsRouter section={settingsSection} />}
+          {view === 'blocklist' && (currentUser.role === 'super_admin' || currentUser.role === 'operator') && <BlocklistPage />}
+          {view === 'account' && <AccountPage user={currentUser} onUserUpdated={setCurrentUser} />}
+          <footer className="workspace-footer"><span>UPENFLOW NOTIFY</span><span>RULES ARE VERSIONED WHEN CHANGED</span></footer>
+        </main>
+      </div>
+    </div>
   )
 }
 type BlockedNumber = { id: number; phone_number: string; reason: string | null; created_at: string }

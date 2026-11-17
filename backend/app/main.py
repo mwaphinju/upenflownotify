@@ -91,6 +91,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return response
 
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # Only honoured by browsers when the response is actually served over HTTPS
+        # (e.g. behind a TLS-terminating reverse proxy); harmless to send over plain HTTP.
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        return response
+
     @app.get("/health")
     def health():
         return {"status": "ok"}

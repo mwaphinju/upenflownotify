@@ -87,7 +87,7 @@ class InboundMessage(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     source_message_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    recipient: Mapped[str] = mapped_column(String(32))
+    recipient: Mapped[str] = mapped_column(String(32), index=True)
     text: Mapped[str] = mapped_column(Text)
     order_ref: Mapped[str | None] = mapped_column(String(255))
     raw_payload: Mapped[dict] = mapped_column(JSON)
@@ -95,7 +95,7 @@ class InboundMessage(Base):
     status: Mapped[str] = mapped_column(String(32), default="Received", index=True)
     rule_id: Mapped[int | None] = mapped_column(ForeignKey("mapping_rules.id"), index=True)
     rule_version_id: Mapped[int | None] = mapped_column(ForeignKey("mapping_rule_versions.id"))
-    sender_id: Mapped[str | None] = mapped_column(String(11))
+    sender_id: Mapped[str | None] = mapped_column(String(11), index=True)
     rendered_text: Mapped[str | None] = mapped_column(Text)
     status_reason: Mapped[str | None] = mapped_column(String(255))
     provider_message_id: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
@@ -104,7 +104,7 @@ class InboundMessage(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     segments: Mapped[int | None] = mapped_column(Integer)
-    network: Mapped[str | None] = mapped_column(String(32))
+    network: Mapped[str | None] = mapped_column(String(32), index=True)
     rate_per_segment_kes: Mapped[float | None] = mapped_column(Numeric(10, 4))
     cost_kes: Mapped[float | None] = mapped_column(Numeric(12, 4))
 
