@@ -4,6 +4,7 @@ import json
 import math
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
@@ -72,6 +73,13 @@ class ServiceAMessage(BaseModel):
     text: str = Field(min_length=1, max_length=10000)
     order_ref: str | None = Field(default=None, max_length=255)
     received_at: datetime | None = None
+
+
+class ManualSendRequest(BaseModel):
+    recipient: str = Field(min_length=1, max_length=32)
+    text: str = Field(min_length=1, max_length=1600)
+    sender_id: str | None = Field(default=None, max_length=11, pattern=r"^[A-Za-z0-9 ]*$")
+    order_ref: str | None = Field(default=None, max_length=255)
 
 
 def rule_snapshot(rule: MappingRule) -> dict:
@@ -326,6 +334,59 @@ def restore_rule_version(rule_id: int, version: int, request: Request, db: Sessi
     return public_rule(rule)
 
 
+@router.post("/api/messages/manual-send", status_code=status.HTTP_202_ACCEPTED)
+def manual_send(
+    payload: ManualSendRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_rule_editor),
+):
+    """Send an outbound SMS directly, bypassing rule matching — a stand-in for Service A
+    while it isn't wired up yet. Goes through the same delivery pipeline (throttle,
+    duplicate guard, blocklist, quiet hours, global switch, cost tracking) as any other
+    message, so it shows up in Notifications/Dashboard exactly like a normal send."""
+    recipient = normalize_kenyan_mobile(payload.recipient)
+    if not recipient:
+        raise HTTPException(status_code=422, detail="Only Kenyan mobile numbers are accepted")
+    configuration = load_configuration_value(db) or {}
+    gateway = configuration.get("gateway", {})
+    sender_id = (payload.sender_id or gateway.get("default_sender_id") or "").upper()
+    if sender_id not in (gateway.get("allowed_sender_ids") or []):
+        raise HTTPException(status_code=422, detail="Sender ID is not in the allowed list")
+    prefix_table = configuration.get("network_prefixes") or DEFAULT_NETWORK_PREFIXES
+    now = datetime.now(timezone.utc)
+    message = InboundMessage(
+        source_message_id=f"manual-{uuid.uuid4()}",
+        recipient=recipient,
+        text=payload.text,
+        order_ref=payload.order_ref,
+        raw_payload={"manual_send": True, "created_by_user_id": user.id},
+        received_at=now,
+        status="Queued",
+        sender_id=sender_id,
+        rendered_text=payload.text,
+        network=detect_network(recipient, prefix_table),
+    )
+    db.add(message)
+    db.flush()
+    db.add(
+        AuditLog(
+            actor_id=user.id,
+            action="message_manual_send",
+            entity="message",
+            entity_id=str(message.id),
+            before=None,
+            after={"recipient": recipient, "sender_id": sender_id, "text": payload.text[:200]},
+            ip_address=request.client.host if request.client else None,
+            created_at=now,
+        )
+    )
+    db.commit()
+    enqueue_delivery(request, background_tasks, message.id)
+    return {"accepted": True, "message_id": message.id}
+
+
 def process_inbound_message(session_factory, message_id: int, runtime_settings: Settings | None = None) -> None:
     with session_factory() as db:
         message = db.get(InboundMessage, message_id)
@@ -430,7 +491,7 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
             db.commit()
             return
         rule = db.get(MappingRule, message.rule_id) if message.rule_id else None
-        if not rule or not rule.is_enabled:
+        if message.rule_id and (not rule or not rule.is_enabled):
             message.status = "Suppressed"
             message.status_reason = "Mapping rule disabled before send"
             db.commit()
@@ -544,7 +605,7 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
             state = switch.value["state"] if switch else "on"
             if not message or message.status != "Sending":
                 return
-            if not rule or not rule.is_enabled:
+            if message.rule_id and (not rule or not rule.is_enabled):
                 message.status = "Suppressed"
                 message.status_reason = "Mapping rule disabled before send"
                 db.commit()

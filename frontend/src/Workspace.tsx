@@ -908,6 +908,51 @@ function SendingBanner({ isAdmin }: { isAdmin: boolean }) {
   </>
 }
 
+function SendMessageDialog({ onClose, onSent }: { onClose: () => void; onSent: () => Promise<void> }) {
+  const [recipient, setRecipient] = useState('')
+  const [senderId, setSenderId] = useState('')
+  const [text, setText] = useState('')
+  const [orderRef, setOrderRef] = useState('')
+  const [error, setError] = useState('')
+  const [sending, setSending] = useState(false)
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSending(true); setError('')
+    try {
+      await api('/api/messages/manual-send', {
+        method: 'POST',
+        body: JSON.stringify({ recipient, text, order_ref: orderRef || null, ...(senderId ? { sender_id: senderId.toUpperCase() } : {}) }),
+      })
+      await onSent()
+      onClose()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to send this message.')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section className="rule-dialog" role="dialog" aria-modal="true" aria-labelledby="send-dialog-title">
+        <div className="dialog-heading"><div><span className="section-kicker">DIRECT SEND</span><h2 id="send-dialog-title">Send a message</h2></div><button className="quiet-icon" type="button" onClick={onClose} aria-label="Close"><X size={18} /></button></div>
+        <p className="inline-instruction">Sends straight to the gateway — no mapping rule needed. Useful for testing or while Service A isn't connected yet. Still subject to throttling, duplicate protection, the blocklist, quiet hours, and the global send switch.</p>
+        <form className="rule-form" onSubmit={submit}>
+          <label>Recipient<input value={recipient} onChange={(event) => setRecipient(event.target.value)} required placeholder="0712345678" /></label>
+          <label>Message text<textarea value={text} onChange={(event) => setText(event.target.value)} required maxLength={1600} rows={3} placeholder="Your order is on its way." /><small>{text.length} characters</small></label>
+          <div className="form-grid-two">
+            <label>Sender ID<input value={senderId} onChange={(event) => setSenderId(event.target.value)} maxLength={11} placeholder="Defaults to the gateway's default Sender ID" /></label>
+            <label>Order reference (optional)<input value={orderRef} onChange={(event) => setOrderRef(event.target.value)} placeholder="ORD-4012" /></label>
+          </div>
+          {error && <p className="workspace-error" role="alert">{error}</p>}
+          <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={sending || !recipient.trim() || !text.trim()}>{sending ? 'Sending…' : 'Send'} <Check size={15} /></button></div>
+        </form>
+      </section>
+    </div>
+  )
+}
+
 function NotificationsPage({ canExport }: { canExport: boolean }) {
   const initialParams = new URLSearchParams(window.location.search)
   const [search, setSearch] = useState(initialParams.get('search') ?? '')
@@ -926,6 +971,7 @@ function NotificationsPage({ canExport }: { canExport: boolean }) {
   const [selected, setSelected] = useState<MessageDetail | null>(null)
   const [timelinePhone, setTimelinePhone] = useState<{ phone_number: string; messages: Message[] } | null>(null)
   const [resending, setResending] = useState(false)
+  const [showSendDialog, setShowSendDialog] = useState(false)
 
   function filterParams() {
     const params = new URLSearchParams({ page: String(page) })
@@ -978,7 +1024,7 @@ function NotificationsPage({ canExport }: { canExport: boolean }) {
 
   return (
     <div className="messages-page">
-      <div className="page-heading"><div><div className="section-kicker">MESSAGE ACTIVITY / 07</div><h1>Notifications</h1><p>Search fulfilment messages and inspect their routing result.</p></div>{canExport && <a className="secondary-button export-button" href={`/api/messages/export.csv?${filterParams()}`}><Download size={15} /> Export CSV</a>}</div>
+      <div className="page-heading"><div><div className="section-kicker">MESSAGE ACTIVITY / 07</div><h1>Notifications</h1><p>Search fulfilment messages and inspect their routing result.</p></div><div className="page-heading-actions">{canExport && <button className="primary-button" type="button" onClick={() => setShowSendDialog(true)}><CirclePlus size={16} /> Send message</button>}{canExport && <a className="secondary-button export-button" href={`/api/messages/export.csv?${filterParams()}`}><Download size={15} /> Export CSV</a>}</div></div>
       {error && <div className="workspace-alert" role="alert">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss"><X size={16} /></button></div>}
       {notice && <div className="workspace-notice" role="status">{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss"><X size={16} /></button></div>}
       <div className="message-toolbar"><form className="message-search" onSubmit={(event) => { event.preventDefault(); setPage(1); void loadMessages() }}><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Phone, order ref, message ID, or text" /><button type="submit">Search</button></form><label className="filter-select"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1) }}><option value="">All statuses</option>{['Queued', 'Unmapped', 'Suppressed', 'Skipped', 'Invalid recipient', 'Sent', 'Delivered', 'Failed', 'Throttled', 'Blocked'].map((value) => <option key={value}>{value}</option>)}</select><ChevronDown size={14} /></label><label className="filter-select"><span>Network</span><select value={network} onChange={(event) => { setNetwork(event.target.value); setPage(1) }}><option value="">All networks</option>{['Safaricom', 'Airtel', 'Telkom'].map((value) => <option key={value}>{value}</option>)}</select><ChevronDown size={14} /></label><span className="result-count">{total.toLocaleString()} messages</span></div>
@@ -1016,6 +1062,7 @@ function NotificationsPage({ canExport }: { canExport: boolean }) {
         <div className="drawer-heading"><div><span className="section-kicker">CUSTOMER TIMELINE</span><h2>{timelinePhone.phone_number}</h2></div><button className="quiet-icon" type="button" onClick={() => setTimelinePhone(null)} aria-label="Close"><X size={18} /></button></div>
         <div className="timeline-list">{timelinePhone.messages.length === 0 ? <p className="inline-instruction">No messages found for this number.</p> : timelinePhone.messages.map((message) => <div className="timeline-row" key={message.id}><span className="timeline-dot" /><strong>{message.status}</strong><small>{new Date(message.received_at).toLocaleString()} · {message.sms_preview ?? message.inbound_preview}</small></div>)}</div>
       </aside></div>}
+      {showSendDialog && <SendMessageDialog onClose={() => setShowSendDialog(false)} onSent={async () => { setNotice('Message sent.'); await loadMessages() }} />}
     </div>
   )
 }

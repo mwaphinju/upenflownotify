@@ -186,6 +186,50 @@ def test_resend_is_not_double_claimable(ops_client, monkeypatch):
         assert len(resend_logs) == 1
 
 
+def test_manual_send_delivers_without_a_matching_rule(ops_client, monkeypatch):
+    client, app = ops_client
+    assert configure_gateway(client).status_code == 200
+
+    class FakeAdapter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
+            return "provider-manual-1"
+
+    monkeypatch.setattr(rules, "ServiceBAdapter", FakeAdapter)
+    response = client.post("/api/messages/manual-send", json={"recipient": "0712345678", "text": "Your parcel is ready for pickup.", "order_ref": "manual-1"})
+    assert response.status_code == 202
+    message_id = response.json()["message_id"]
+    with app.state.session_factory() as db:
+        message = db.get(InboundMessage, message_id)
+        assert message.rule_id is None
+        assert message.status == "Sent"
+        assert message.provider_message_id == "provider-manual-1"
+        assert message.sender_id == "UPENFLOW"
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == "message_manual_send", AuditLog.entity_id == str(message_id)))
+        assert audit is not None
+        assert audit.after["recipient"] == "254712345678"
+
+
+def test_manual_send_rejects_unapproved_sender_id(ops_client):
+    client, app = ops_client
+    assert configure_gateway(client).status_code == 200
+    response = client.post("/api/messages/manual-send", json={"recipient": "0712345678", "text": "Hello", "sender_id": "NOTALLOWED"})
+    assert response.status_code == 422
+
+
+def test_manual_send_requires_operator_or_above(ops_client):
+    client, app = ops_client
+    assert configure_gateway(client).status_code == 200
+    with app.state.session_factory() as db:
+        user = db.scalar(select(User).where(User.email == "admin@example.com"))
+        user.role = "viewer"
+        db.commit()
+    response = client.post("/api/messages/manual-send", json={"recipient": "0712345678", "text": "Hello"})
+    assert response.status_code == 403
+
+
 def test_customer_timeline_lists_messages_for_number(ops_client):
     client, app = ops_client
     assert create_rule(client).status_code == 201

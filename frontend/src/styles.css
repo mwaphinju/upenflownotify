@@ -233,6 +233,7 @@ h1, h2, h3, p, dl, dd { margin: 0; }
    ========================================================= */
 .rules-page, .account-page, .messages-page, .dashboard-page, .settings-page-single { max-width: 1320px; margin: 0 auto; padding: 32px clamp(20px, 4vw, 48px) 56px; }
 .page-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+.page-heading-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .section-kicker { color: var(--md-primary); font: 700 10px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .page-heading h1 { margin: 8px 0 4px; color: var(--ink); font: 600 28px var(--display); }
 .page-heading p { color: var(--muted); font-size: 13px; }
