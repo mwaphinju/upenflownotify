@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, Ban, BellRing, Check, ChevronDown, ChevronLeft, ChevronRight,
-  CirclePlus, Clock, CreditCard, Download, FlaskConical, Gauge, History, KeyRound, LayoutDashboard, LogOut,
+  CirclePlus, Clock, CreditCard, Download, FlaskConical, Gauge, History, KeyRound, Laptop2, LayoutDashboard, LogOut,
   Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Play, RefreshCw, Route, Search,
-  Server, ShieldAlert, ShieldBan, Signal, SlidersHorizontal, Square, Trash2, UserCircle, UserRound, Users, X,
+  Server, ShieldAlert, ShieldBan, ShieldCheck, Signal, SlidersHorizontal, Square, Trash2, UserCircle, UserRound, Users, X,
 } from 'lucide-react'
 
 type User = { name: string; email: string; role: string }
@@ -83,6 +83,7 @@ type Configuration = {
 
 type View = 'dashboard' | 'messages' | 'rules' | 'blocklist' | 'settings' | 'users' | 'account'
 type SettingsSection = 'billing' | 'gateway' | 'limits' | 'safety' | 'quiet-hours' | 'retention' | 'monitoring' | 'network'
+type AccountSection = 'profile' | 'security' | 'sessions'
 
 const emptyDraft: RuleDraft = {
   name: '', priority: 10, match_type: 'contains', match_value: '', case_sensitive: false,
@@ -432,9 +433,37 @@ function UsersPage() {
   )
 }
 
-function AccountPage({ user, onUserUpdated }: { user: User; onUserUpdated: (user: User) => void }) {
+function ProfileSettingsPage({ user, onUserUpdated }: { user: User; onUserUpdated: (user: User) => void }) {
   const [name, setName] = useState(user.name)
-  const [sessions, setSessions] = useState<ActiveSession[]>([])
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(''); setSaving(true)
+    try {
+      const updated = await api<User>('/api/me', { method: 'PATCH', body: JSON.stringify({ name }) })
+      onUserUpdated(updated); setNotice('Profile updated.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to update profile.') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <SettingsPageShell kicker="MY ACCOUNT / PROFILE" title="Profile" description="Your display name and account role." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      <form className="settings-form-page" onSubmit={saveProfile}>
+        <section className="md-card">
+          <div className="settings-grid">
+            <label>Display name<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
+            <label>Email address<input value={user.email} disabled /></label>
+          </div>
+        </section>
+        <div className="settings-save-row"><span className="account-state active"><i />{user.role.replace('_', ' ')}</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save changes'} <Check size={15} /></button></div>
+      </form>
+    </SettingsPageShell>
+  )
+}
+
+function SecuritySettingsPage() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -442,17 +471,6 @@ function AccountPage({ user, onUserUpdated }: { user: User; onUserUpdated: (user
   const [code, setCode] = useState('')
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
-
-  async function loadSessions() { setSessions(await api<ActiveSession[]>('/api/me/sessions')) }
-  useEffect(() => { void loadSessions().catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to load sessions.')) }, [])
-
-  async function saveProfile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setError('')
-    try {
-      const updated = await api<User>('/api/me', { method: 'PATCH', body: JSON.stringify({ name }) })
-      onUserUpdated(updated); setNotice('Profile updated.')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to update profile.') }
-  }
 
   async function startPasswordChange(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError('')
@@ -470,29 +488,66 @@ function AccountPage({ user, onUserUpdated }: { user: User; onUserUpdated: (user
       await api('/api/me/password/change/confirm', { method: 'POST', body: JSON.stringify({ challenge_token: challengeToken, code }) })
       setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); setChallengeToken(''); setCode('')
       setNotice('Password changed. Other active sessions have been signed out.')
-      await loadSessions()
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'The code could not be verified.') }
   }
+
+  return (
+    <SettingsPageShell kicker="MY ACCOUNT / SECURITY" title="Change password" description="Confirmed by a code sent to your email." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      <section className="md-card">
+        {challengeToken ? (
+          <form className="settings-form" onSubmit={confirmPasswordChange}>
+            <p className="inline-instruction">Enter the code sent to your email to confirm this change.</p>
+            <label>6-digit code<input value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required /></label>
+            <button className="primary-button" type="submit" disabled={code.length !== 6}>Confirm password change <Check size={15} /></button>
+          </form>
+        ) : (
+          <form className="settings-form" onSubmit={startPasswordChange}>
+            <label>Current password<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+            <label>New password<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required minLength={12} /></label>
+            <label>Confirm new password<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required minLength={12} /></label>
+            <button className="secondary-button" type="submit">Send confirmation code <ArrowDown size={15} /></button>
+          </form>
+        )}
+      </section>
+    </SettingsPageShell>
+  )
+}
+
+function SessionsSettingsPage() {
+  const [sessions, setSessions] = useState<ActiveSession[] | null>(null)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+
+  async function loadSessions() { setSessions(await api<ActiveSession[]>('/api/me/sessions')) }
+  useEffect(() => { void loadSessions().catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to load sessions.')) }, [])
 
   async function revokeSession(session: ActiveSession) {
     try {
       await api(`/api/me/sessions/${session.id}`, { method: 'DELETE' })
       if (session.current) { window.location.reload(); return }
+      setNotice('Session revoked.')
       await loadSessions()
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to revoke this session.') }
   }
 
   return (
-    <div className="account-page">
-      <div className="page-heading"><div><div className="section-kicker">PERSONAL SETTINGS / 03</div><h1>My account</h1><p>Manage your profile, password, and signed-in devices.</p></div></div>
-      {(notice || error) && <div className={error ? 'workspace-alert' : 'workspace-notice'} role="status">{error || notice}<button type="button" onClick={() => { setError(''); setNotice('') }} aria-label="Dismiss"><X size={16} /></button></div>}
-      <div className="account-grid">
-        <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">PROFILE</span><h2>Account details</h2></div></div><form className="settings-form" onSubmit={saveProfile}><label>Display name<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>Email address<input value={user.email} disabled /></label><div className="settings-form-footer"><span className="account-state active"><i />{user.role.replace('_', ' ')}</span><button className="primary-button" type="submit">Save changes <Check size={15} /></button></div></form></section>
-        <section className="settings-section"><div className="section-heading"><div><span className="section-kicker">SECURITY</span><h2>Change password</h2></div></div>{challengeToken ? <form className="settings-form" onSubmit={confirmPasswordChange}><p className="inline-instruction">Enter the code sent to your email to confirm this change.</p><label>6-digit code<input value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required /></label><button className="primary-button" type="submit" disabled={code.length !== 6}>Confirm password change <Check size={15} /></button></form> : <form className="settings-form" onSubmit={startPasswordChange}><label>Current password<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label>New password<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required minLength={12} /></label><label>Confirm new password<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required minLength={12} /></label><button className="secondary-button" type="submit">Send confirmation code <ArrowDown size={15} /></button></form>}</section>
-      </div>
-      <section className="settings-section sessions-section"><div className="section-heading"><div><span className="section-kicker">ACTIVE DEVICES</span><h2>Signed-in sessions <span>{sessions.length}</span></h2></div></div><div className="session-list">{sessions.map((session) => <div className="session-item" key={session.id}><span className="session-device"><UserRound size={17} /></span><span className="session-details"><strong>{session.device}</strong><small>{session.ip_address ?? 'IP unavailable'} · {new Date(session.last_seen_at).toLocaleString()}</small></span>{session.current && <span className="current-session">THIS DEVICE</span>}<button className="quiet-icon danger-icon" type="button" title="Revoke session" onClick={() => void revokeSession(session)}><X size={16} /></button></div>)}{sessions.length === 0 && <p className="empty-sessions">No active sessions.</p>}</div></section>
-    </div>
+    <SettingsPageShell kicker="MY ACCOUNT / SESSIONS" title="Signed-in sessions" description="Devices and browsers currently signed into your account." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+      {sessions === null ? <div className="dashboard-loading">Loading sessions…</div> : (
+        <div className="session-list">
+          {sessions.map((session) => <div className="session-item" key={session.id}><span className="session-device"><UserRound size={17} /></span><span className="session-details"><strong>{session.device}</strong><small>{session.ip_address ?? 'IP unavailable'} · {new Date(session.last_seen_at).toLocaleString()}</small></span>{session.current && <span className="current-session">THIS DEVICE</span>}<button className="quiet-icon danger-icon" type="button" title="Revoke session" onClick={() => void revokeSession(session)}><X size={16} /></button></div>)}
+          {sessions.length === 0 && <p className="empty-sessions">No active sessions.</p>}
+        </div>
+      )}
+    </SettingsPageShell>
   )
+}
+
+function AccountRouter({ section, user, onUserUpdated }: { section: AccountSection; user: User; onUserUpdated: (user: User) => void }) {
+  switch (section) {
+    case 'profile': return <ProfileSettingsPage user={user} onUserUpdated={onUserUpdated} />
+    case 'security': return <SecuritySettingsPage />
+    case 'sessions': return <SessionsSettingsPage />
+  }
 }
 
 function BlocklistPage() {
@@ -1197,6 +1252,12 @@ function DashboardPage() {
   </div>
 }
 
+const ACCOUNT_NAV_ITEMS: { id: AccountSection; label: string; icon: ReactNode }[] = [
+  { id: 'profile', label: 'Profile', icon: <UserCircle size={17} /> },
+  { id: 'security', label: 'Security', icon: <ShieldCheck size={17} /> },
+  { id: 'sessions', label: 'Sessions', icon: <Laptop2 size={17} /> },
+]
+
 const SETTINGS_NAV_ITEMS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
   { id: 'billing', label: 'Billing', icon: <CreditCard size={17} /> },
   { id: 'gateway', label: 'Gateway', icon: <Server size={17} /> },
@@ -1219,10 +1280,13 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
 }
 
 function Sidebar({
-  view, setView, settingsSection, setSettingsSection, collapsed, settingsOpen, setSettingsOpen, role, mobileOpen, onNavigate,
+  view, setView, settingsSection, setSettingsSection, collapsed, settingsOpen, setSettingsOpen,
+  accountSection, setAccountSection, accountOpen, setAccountOpen, role, mobileOpen, onNavigate,
 }: {
   view: View; setView: (view: View) => void; settingsSection: SettingsSection; setSettingsSection: (section: SettingsSection) => void
   collapsed: boolean; settingsOpen: boolean; setSettingsOpen: (updater: (value: boolean) => boolean) => void
+  accountSection: AccountSection; setAccountSection: (section: AccountSection) => void
+  accountOpen: boolean; setAccountOpen: (updater: (value: boolean) => boolean) => void
   role: string; mobileOpen: boolean; onNavigate: () => void
 }) {
   const isSuperAdmin = role === 'super_admin'
@@ -1231,6 +1295,8 @@ function Sidebar({
   function go(next: View) { setView(next); onNavigate() }
   function goSettings(section: SettingsSection) { setView('settings'); setSettingsSection(section); onNavigate() }
   function toggleSettingsGroup() { setSettingsOpen((value) => !value) }
+  function goAccount(section: AccountSection) { setView('account'); setAccountSection(section); onNavigate() }
+  function toggleAccountGroup() { setAccountOpen((value) => !value) }
 
   return (
     <nav className={`side-nav${collapsed ? ' collapsed' : ''}${mobileOpen ? ' mobile-open' : ''}`} aria-label="Primary">
@@ -1268,7 +1334,32 @@ function Sidebar({
           </li>
         )}
         {isSuperAdmin && <NavButton active={view === 'users'} icon={<Users size={18} />} label="Users" onClick={() => go('users')} />}
-        <NavButton active={view === 'account'} icon={<UserCircle size={18} />} label="My account" onClick={() => go('account')} />
+        <li className="side-nav-group">
+          <button
+            className="side-nav-item side-nav-group-toggle"
+            type="button"
+            aria-expanded={accountOpen}
+            aria-controls="account-subnav"
+            onClick={toggleAccountGroup}
+          >
+            <UserCircle size={18} /><span className="side-nav-label">My account</span>
+            <ChevronDown size={14} className={accountOpen ? 'side-nav-chevron open' : 'side-nav-chevron'} />
+          </button>
+          <ul id="account-subnav" className="side-nav-sublist" hidden={!accountOpen || collapsed}>
+            {ACCOUNT_NAV_ITEMS.map((item) => (
+              <li key={item.id}>
+                <button
+                  className={view === 'account' && accountSection === item.id ? 'side-nav-subitem selected' : 'side-nav-subitem'}
+                  type="button"
+                  aria-current={view === 'account' && accountSection === item.id ? 'page' : undefined}
+                  onClick={() => goAccount(item.id)}
+                >
+                  {item.icon}<span className="side-nav-label">{item.label}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </li>
       </ul>
     </nav>
   )
@@ -1278,6 +1369,8 @@ export default function Workspace({ user, onSignOut }: { user: User; onSignOut: 
   const [view, setView] = useState<View>('dashboard')
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('billing')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [accountSection, setAccountSection] = useState<AccountSection>('profile')
+  const [accountOpen, setAccountOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('upenflow-nav-collapsed') === '1' } catch { return false }
   })
@@ -1314,6 +1407,7 @@ export default function Workspace({ user, onSignOut }: { user: User; onSignOut: 
         <Sidebar
           view={view} setView={setView} settingsSection={settingsSection} setSettingsSection={setSettingsSection}
           collapsed={collapsed} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen}
+          accountSection={accountSection} setAccountSection={setAccountSection} accountOpen={accountOpen} setAccountOpen={setAccountOpen}
           role={currentUser.role} mobileOpen={mobileOpen} onNavigate={() => setMobileOpen(false)}
         />
         <main className="main-content" id="main-content">
@@ -1323,7 +1417,7 @@ export default function Workspace({ user, onSignOut }: { user: User; onSignOut: 
           {view === 'users' && currentUser.role === 'super_admin' && <UsersPage />}
           {view === 'settings' && currentUser.role === 'super_admin' && <SettingsRouter section={settingsSection} />}
           {view === 'blocklist' && (currentUser.role === 'super_admin' || currentUser.role === 'operator') && <BlocklistPage />}
-          {view === 'account' && <AccountPage user={currentUser} onUserUpdated={setCurrentUser} />}
+          {view === 'account' && <AccountRouter section={accountSection} user={currentUser} onUserUpdated={setCurrentUser} />}
           <footer className="workspace-footer"><span>UPENFLOW NOTIFY</span><span>RULES ARE VERSIONED WHEN CHANGED</span></footer>
         </main>
       </div>
