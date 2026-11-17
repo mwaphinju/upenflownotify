@@ -116,17 +116,19 @@ def test_configured_gateway_sends_once_snapshots_cost_and_accepts_dlr(sending_cl
     assert rule.status_code == 201
     configured = client.patch("/api/settings", json={
         "billing": {"cost_per_segment_kes": "0.95", "currency": "KES"},
-        "gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
+        "gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "client_id": "fake-client", "access_key": "fake-access", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
     })
     assert configured.status_code == 200
     sent = []
 
     class FakeAdapter:
-        def __init__(self, base_url, api_key, username=None):
+        def __init__(self, base_url, api_key, client_id=None, access_key=None):
             assert base_url.startswith("https://gateway.example.com")
             assert api_key == "fake-secret"
+            assert client_id == "fake-client"
+            assert access_key == "fake-access"
 
-        def send(self, sender_id, to, text, message_key):
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
             sent.append((sender_id, to, text, message_key))
             return "provider-1001"
 
@@ -153,14 +155,14 @@ def test_configured_gateway_sends_once_snapshots_cost_and_accepts_dlr(sending_cl
 def test_blocklist_and_duplicate_guard_stop_provider_calls(sending_client, monkeypatch):
     client, app = sending_client
     assert create_rule(client).status_code == 201
-    assert client.patch("/api/settings", json={"gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]}}).status_code == 200
+    assert client.patch("/api/settings", json={"gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "client_id": "fake-client", "access_key": "fake-access", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]}}).status_code == 200
     sent = []
 
     class FakeAdapter:
         def __init__(self, *args, **kwargs):
             pass
 
-        def send(self, sender_id, to, text, message_key):
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
             sent.append(message_key)
             return f"provider-{message_key}"
 
@@ -187,7 +189,7 @@ def test_fake_test_mode_only_records_allowlisted_numbers(sending_client):
     client, app = sending_client
     assert create_rule(client).status_code == 201
     configured = client.patch("/api/settings", json={
-        "gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
+        "gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "client_id": "fake-client", "access_key": "fake-access", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
         "safety": {"test_mode": True, "fake_gateway": True, "test_allowlist": ["0712345678"]},
     })
     assert configured.status_code == 200

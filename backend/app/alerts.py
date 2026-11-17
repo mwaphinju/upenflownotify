@@ -44,12 +44,15 @@ def send_alert(settings: Settings, configuration: dict, subject: str, message: s
 
     oncall_phone = monitoring.get("oncall_phone")
     gateway = configuration.get("gateway", {})
-    if oncall_phone and gateway.get("base_url") and gateway.get("encrypted_api_key"):
+    if oncall_phone and gateway.get("base_url") and gateway.get("encrypted_api_key") and gateway.get("encrypted_client_id") and gateway.get("encrypted_access_key"):
         try:
             from app.service_b import ServiceBAdapter
 
-            api_key = decrypt_secret(gateway["encrypted_api_key"], secret_key(settings))
-            adapter = ServiceBAdapter(gateway["base_url"], api_key, gateway.get("username"))
+            key = secret_key(settings)
+            api_key = decrypt_secret(gateway["encrypted_api_key"], key)
+            client_id = decrypt_secret(gateway["encrypted_client_id"], key)
+            access_key = decrypt_secret(gateway["encrypted_access_key"], key)
+            adapter = ServiceBAdapter(gateway["base_url"], api_key, client_id, access_key)
             sender_id = gateway.get("default_sender_id", "UPENFLOW")
             adapter.send(sender_id, oncall_phone, f"{subject}: {message}"[:160], f"alert-{subject}")
         except Exception:

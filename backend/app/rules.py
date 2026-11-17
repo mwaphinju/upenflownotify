@@ -417,10 +417,13 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
             return
         configuration = db.scalar(select(SystemSetting).where(SystemSetting.key == "configuration"))
         gateway = configuration.value.get("gateway", {}) if configuration else {}
-        if not gateway.get("base_url") or not gateway.get("encrypted_api_key"):
+        if not gateway.get("base_url") or not gateway.get("encrypted_api_key") or not gateway.get("encrypted_client_id") or not gateway.get("encrypted_access_key"):
             return
         try:
-            api_key = decrypt_secret(gateway["encrypted_api_key"], settings.secret_encryption_key or settings.otp_pepper)
+            secret_key = settings.secret_encryption_key or settings.otp_pepper
+            api_key = decrypt_secret(gateway["encrypted_api_key"], secret_key)
+            client_id = decrypt_secret(gateway["encrypted_client_id"], secret_key)
+            access_key = decrypt_secret(gateway["encrypted_access_key"], secret_key)
         except Exception:
             message.status = "Failed"
             message.error = "Gateway credentials could not be decrypted"
@@ -459,7 +462,7 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
         message.recipient = recipient
         if not message.network:
             message.network = detect_network(recipient, (configuration.value.get("network_prefixes") if configuration else None) or DEFAULT_NETWORK_PREFIXES)
-        segments, _, _ = sms_segments(message.rendered_text or "")
+        segments, encoding, _ = sms_segments(message.rendered_text or "")
         limits = configuration.value.get("limits", {})
         max_segments = int(limits.get("max_segments", 3))
         if segments > max_segments:
@@ -532,7 +535,7 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
         message.status = "Sending"
         db.commit()
 
-    adapter = ServiceBAdapter(gateway["base_url"], api_key, gateway.get("username"))
+    adapter = ServiceBAdapter(gateway["base_url"], api_key, client_id, access_key)
     for attempt in range(retries):
         with session_factory() as db:
             message = db.get(InboundMessage, message_id)
@@ -554,7 +557,7 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
             message.attempts += 1
             db.commit()
         try:
-            provider_id = adapter.send(sender_id, recipient, message.rendered_text or "", message.source_message_id)
+            provider_id = adapter.send(sender_id, recipient, message.rendered_text or "", message.source_message_id, is_unicode=(encoding == "Unicode"))
         except ServiceBError as error:
             with session_factory() as db:
                 message = db.get(InboundMessage, message_id)

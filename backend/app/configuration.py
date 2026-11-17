@@ -29,8 +29,9 @@ class BillingUpdate(BaseModel):
 
 class GatewayUpdate(BaseModel):
     base_url: HttpUrl | None = None
-    username: str | None = Field(default=None, max_length=120)
+    client_id: str | None = Field(default=None, max_length=200)
     api_key: str | None = Field(default=None, max_length=1024)
+    access_key: str | None = Field(default=None, max_length=1024)
     default_sender_id: str | None = Field(default=None, min_length=1, max_length=11, pattern=r"^[A-Za-z0-9 ]+$")
     allowed_sender_ids: list[str] | None = None
 
@@ -86,7 +87,7 @@ class ConfigurationUpdate(BaseModel):
 
 DEFAULTS: dict[str, Any] = {
     "billing": {"cost_per_segment_kes": "0.80", "currency": "KES", "monthly_budget_kes": "20000.00", "alert_threshold_percent": 80, "network_rates": {}},
-    "gateway": {"base_url": None, "username": None, "encrypted_api_key": None, "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
+    "gateway": {"base_url": "https://api.onfonmedia.co.ke/v1/sms/SendBulkSMS", "encrypted_client_id": None, "encrypted_api_key": None, "encrypted_access_key": None, "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
     "limits": {"send_rate_per_second": 20, "max_segments": 3, "stale_queue_minutes": 60, "retry_attempts": 3},
     "safety": {"max_per_recipient_hour": 5, "duplicate_window_minutes": 10, "test_mode": False, "fake_gateway": False, "test_allowlist": []},
     "quiet_hours": {"enabled": False, "start": "21:00", "end": "07:00"},
@@ -128,6 +129,12 @@ def public_configuration(data: dict, request: Request) -> dict:
     encrypted_key = gateway.pop("encrypted_api_key", None)
     gateway["api_key"] = "••••••••" if encrypted_key else None
     gateway["has_api_key"] = bool(encrypted_key)
+    encrypted_client_id = gateway.pop("encrypted_client_id", None)
+    gateway["client_id"] = "••••••••" if encrypted_client_id else None
+    gateway["has_client_id"] = bool(encrypted_client_id)
+    encrypted_access_key = gateway.pop("encrypted_access_key", None)
+    gateway["access_key"] = "••••••••" if encrypted_access_key else None
+    gateway["has_access_key"] = bool(encrypted_access_key)
     monitoring = result.setdefault("monitoring", {key: value for key, value in DEFAULTS["monitoring"].items()})
     encrypted_slack = monitoring.pop("encrypted_slack_webhook_url", None)
     encrypted_telegram = monitoring.pop("encrypted_telegram_bot_token", None)
@@ -178,6 +185,12 @@ def update_configuration(payload: ConfigurationUpdate, request: Request, db: Ses
         api_key = gateway_changes.pop("api_key", None)
         if api_key:
             after["gateway"]["encrypted_api_key"] = cipher(request).encrypt(api_key.encode()).decode()
+        client_id = gateway_changes.pop("client_id", None)
+        if client_id:
+            after["gateway"]["encrypted_client_id"] = cipher(request).encrypt(client_id.encode()).decode()
+        access_key = gateway_changes.pop("access_key", None)
+        if access_key:
+            after["gateway"]["encrypted_access_key"] = cipher(request).encrypt(access_key.encode()).decode()
         after["gateway"].update(gateway_changes)
         allowed = after["gateway"].get("allowed_sender_ids") or []
         if any(not sender or len(sender) > 11 or not sender.isalnum() for sender in allowed):

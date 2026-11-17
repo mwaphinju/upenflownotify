@@ -58,20 +58,29 @@ class ServiceBError(Exception):
 
 
 class ServiceBAdapter:
-    def __init__(self, base_url: str, api_key: str, username: str | None = None, timeout: float = 10.0, client: httpx.Client | None = None):
+    """Onfon Media SendBulkSMS adapter. One call = one message (immediate send, never scheduled)."""
+
+    def __init__(self, base_url: str, api_key: str, client_id: str | None = None, access_key: str | None = None, timeout: float = 10.0, client: httpx.Client | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.username = username
+        self.client_id = client_id
+        self.access_key = access_key
         self.timeout = timeout
         self.client = client
 
-    def send(self, sender_id: str, to: str, text: str, message_key: str) -> str | None:
+    def send(self, sender_id: str, to: str, text: str, message_key: str, is_unicode: bool = False) -> str | None:
         client = self.client or httpx
         try:
             response = client.post(
                 self.base_url,
-                json={"sender_id": sender_id, "to": to, "text": text, "username": self.username},
-                headers={"Authorization": f"Bearer {self.api_key}", "Idempotency-Key": message_key},
+                json={
+                    "SenderId": sender_id,
+                    "IsUnicode": is_unicode,
+                    "MessageParameters": [{"Number": to, "Text": text}],
+                    "ApiKey": self.api_key,
+                    "ClientId": self.client_id,
+                },
+                headers={"Content-Type": "application/json", "AccessKey": self.access_key or ""},
                 timeout=self.timeout,
             )
         except httpx.TimeoutException as error:
@@ -84,9 +93,15 @@ class ServiceBAdapter:
             raise ServiceBError(f"Gateway returned HTTP {response.status_code}", retryable=False)
         try:
             result = response.json()
-        except ValueError:
-            return None
-        return result.get("provider_message_id") or result.get("message_id") or result.get("id")
+        except ValueError as error:
+            raise ServiceBError("Gateway returned a non-JSON response", retryable=True) from error
+        error_code = result.get("ErrorCode")
+        if error_code not in (0, None):
+            # Onfon's error-code table isn't wired up yet, so every rejected send is treated as
+            # permanent (not retried) rather than guessing which codes are transient.
+            raise ServiceBError(result.get("ErrorDescription") or f"Gateway rejected the message (ErrorCode {error_code})", retryable=False)
+        data = result.get("Data") or []
+        return data[0].get("MessageId") if data else None
 
 
 @router.post("/service-b", status_code=202)

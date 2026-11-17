@@ -73,7 +73,7 @@ def post_dlr(client, provider_message_id, status, key="dlr-key", secret=b"dlr-se
 
 def configure_gateway(client):
     return client.patch("/api/settings", json={
-        "gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
+        "gateway": {"base_url": "https://gateway.example.com/send", "api_key": "fake-secret", "client_id": "fake-client", "access_key": "fake-access", "default_sender_id": "UPENFLOW", "allowed_sender_ids": ["UPENFLOW"]},
     })
 
 
@@ -123,7 +123,7 @@ def test_resend_requeues_failed_message(ops_client, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def send(self, sender_id, to, text, message_key):
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
             from app.service_b import ServiceBError
             raise ServiceBError("boom", retryable=False)
 
@@ -138,7 +138,7 @@ def test_resend_requeues_failed_message(ops_client, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def send(self, sender_id, to, text, message_key):
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
             return "provider-resend-1"
 
     monkeypatch.setattr(rules, "ServiceBAdapter", WorkingAdapter)
@@ -165,7 +165,7 @@ def test_resend_is_not_double_claimable(ops_client, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def send(self, sender_id, to, text, message_key):
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
             from app.service_b import ServiceBError
             raise ServiceBError("boom", retryable=False)
 
@@ -215,7 +215,7 @@ def test_quiet_hours_holds_messages_until_window_ends(ops_client, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def send(self, sender_id, to, text, message_key):
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
             sent.append(message_key)
             return "provider-quiet"
 
@@ -301,7 +301,7 @@ def test_dashboard_kpis_and_exports(ops_client, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def send(self, sender_id, to, text, message_key):
+        def send(self, sender_id, to, text, message_key, is_unicode=False):
             return f"provider-{message_key}"
 
     monkeypatch.setattr(rules, "ServiceBAdapter", FakeAdapter)

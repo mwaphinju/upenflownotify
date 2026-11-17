@@ -63,7 +63,10 @@ type Dashboard = {
 }
 type Configuration = {
   billing: { cost_per_segment_kes: string; currency: string; monthly_budget_kes: string; alert_threshold_percent: number; network_rates: Record<string, string> }
-  gateway: { base_url: string | null; username: string | null; api_key: string | null; has_api_key: boolean; default_sender_id: string; allowed_sender_ids: string[] }
+  gateway: {
+    base_url: string | null; client_id: string | null; has_client_id: boolean; api_key: string | null; has_api_key: boolean
+    access_key: string | null; has_access_key: boolean; default_sender_id: string; allowed_sender_ids: string[]
+  }
   limits: { send_rate_per_second: number; max_segments: number; stale_queue_minutes: number; retry_attempts: number }
   safety: { max_per_recipient_hour: number; duplicate_window_minutes: number; test_mode: boolean; fake_gateway: boolean; test_allowlist: string[] }
   quiet_hours: { enabled: boolean; start: string; end: string }
@@ -560,6 +563,8 @@ function GatewaySettingsPage() {
   const { value: gateway, setValue: setGateway, error, setError, loading } = useConfigSlice((config) => config.gateway)
   const [allowedSenders, setAllowedSenders] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [accessKey, setAccessKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
 
@@ -571,29 +576,30 @@ function GatewaySettingsPage() {
     setSaving(true); setError(''); setNotice('')
     const senders = allowedSenders.split(',').map((value) => value.trim().toUpperCase()).filter(Boolean)
     const payload = {
-      base_url: gateway.base_url || null, username: gateway.username || null, default_sender_id: gateway.default_sender_id,
-      allowed_sender_ids: senders, ...(apiKey ? { api_key: apiKey } : {}),
+      base_url: gateway.base_url || null, default_sender_id: gateway.default_sender_id, allowed_sender_ids: senders,
+      ...(apiKey ? { api_key: apiKey } : {}), ...(clientId ? { client_id: clientId } : {}), ...(accessKey ? { access_key: accessKey } : {}),
     }
     try {
       const updated = await api<Configuration>('/api/settings', { method: 'PATCH', body: JSON.stringify({ gateway: payload }) })
-      setGateway(updated.gateway); setApiKey(''); setNotice('Gateway settings saved and audit-logged.')
+      setGateway(updated.gateway); setApiKey(''); setClientId(''); setAccessKey(''); setNotice('Gateway settings saved and audit-logged.')
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to save gateway settings.') }
     finally { setSaving(false) }
   }
 
   return (
-    <SettingsPageShell kicker="SETTINGS / GATEWAY" title="Gateway connection" description="Service B base URL, credentials, and registered Sender IDs." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
+    <SettingsPageShell kicker="SETTINGS / GATEWAY" title="Gateway connection" description="Onfon Media (Service B) base URL, credentials, and registered Sender IDs." notice={notice} error={error} onDismiss={() => { setError(''); setNotice('') }}>
       {loading || !gateway ? <div className="dashboard-loading">Loading gateway settings…</div> : (
         <form className="settings-form-page" onSubmit={save}>
           <section className="md-card">
             <div className="settings-grid">
-              <label>Base URL<input type="url" value={gateway.base_url ?? ''} onChange={(event) => setGateway({ ...gateway, base_url: event.target.value })} placeholder="https://gateway.example.com" /></label>
-              <label>Username<input value={gateway.username ?? ''} onChange={(event) => setGateway({ ...gateway, username: event.target.value })} /></label>
+              <label className="wide-setting">Base URL<input type="url" value={gateway.base_url ?? ''} onChange={(event) => setGateway({ ...gateway, base_url: event.target.value })} placeholder="https://api.onfonmedia.co.ke/v1/sms/SendBulkSMS" /></label>
               <label>Default Sender ID<input value={gateway.default_sender_id} onChange={(event) => setGateway({ ...gateway, default_sender_id: event.target.value.toUpperCase() })} maxLength={11} /></label>
               <label>Allowed Sender IDs<input value={allowedSenders} onChange={(event) => setAllowedSenders(event.target.value)} placeholder="UPENFLOW, UPENFLOW2" /><small>Separate registered IDs with commas.</small></label>
-              <label className="secret-field wide-setting">API key <span>{gateway.has_api_key ? 'Saved key is masked' : 'No key saved'}</span><input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={gateway.has_api_key ? 'Enter a new key to rotate' : 'Enter gateway API key'} /></label>
+              <label className="secret-field">Client ID <span>{gateway.has_client_id ? 'Saved value is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder={gateway.has_client_id ? 'Enter a new value to rotate' : 'Onfon ClientId'} /></label>
+              <label className="secret-field">API key <span>{gateway.has_api_key ? 'Saved key is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={gateway.has_api_key ? 'Enter a new key to rotate' : 'Onfon ApiKey'} /></label>
+              <label className="secret-field">Access key <span>{gateway.has_access_key ? 'Saved value is masked' : 'Not configured'}</span><input type="password" autoComplete="new-password" value={accessKey} onChange={(event) => setAccessKey(event.target.value)} placeholder={gateway.has_access_key ? 'Enter a new value to rotate' : 'Sent as the AccessKey header'} /></label>
             </div>
-            <p className="inline-instruction">Service A and Service B credentials will be supplied once the real gateway is connected; these fields accept them without a redeploy.</p>
+            <p className="inline-instruction">All three credentials are required before sends will go out — the worker skips sending (messages stay Queued) until Client ID, API key, and Access key are all configured.</p>
           </section>
           <div className="settings-save-row"><span>Changes are recorded in the audit log.</span><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save gateway'} <Check size={15} /></button></div>
         </form>
