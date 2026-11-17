@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, Ban, BellRing, Check, ChevronDown, ChevronLeft, ChevronRight,
   CirclePlus, Clock, CreditCard, Download, FlaskConical, Gauge, History, KeyRound, Laptop2, LayoutDashboard, LogOut,
@@ -104,6 +104,26 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 type SenderIds = { default_sender_id: string | null; allowed_sender_ids: string[] }
+
+/** Re-runs `callback` on an interval (and immediately whenever the tab becomes visible again,
+ * so data doesn't sit stale while the tab was backgrounded) without re-arming the timer on every
+ * render — always calls the latest `callback` via a ref, so pages don't need `useCallback`. */
+function useAutoRefresh(callback: () => void, intervalMs: number) {
+  const callbackRef = useRef(callback)
+  useEffect(() => { callbackRef.current = callback })
+  useEffect(() => {
+    function tick() {
+      if (document.visibilityState === 'visible') callbackRef.current()
+    }
+    const timer = window.setInterval(tick, intervalMs)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', tick)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intervalMs])
+}
 
 function useSenderIds(): SenderIds | null {
   const [value, setValue] = useState<SenderIds | null>(null)
@@ -242,19 +262,20 @@ function RulesPage({ canEdit }: { canEdit: boolean }) {
   const [result, setResult] = useState<TestResult | null>(null)
   const [testing, setTesting] = useState(false)
 
-  async function loadRules() {
-    setLoading(true)
+  async function loadRules(silent = false) {
+    if (!silent) setLoading(true)
     try {
       setRules(await api<Rule[]>('/api/rules'))
       setError('')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Unable to load rules.')
+      if (!silent) setError(reason instanceof Error ? reason.message : 'Unable to load rules.')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
   useEffect(() => { void loadRules() }, [])
+  useAutoRefresh(() => { void loadRules(true) }, 30000)
 
   function startCreate() {
     setEditingId(null)
@@ -384,13 +405,14 @@ function UsersPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  async function loadUsers() {
-    setLoading(true)
-    try { setUsers(await api<ManagedUser[]>('/api/admin/users')); setError('') }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to load users.') }
-    finally { setLoading(false) }
+  async function loadUsers(silent = false) {
+    if (!silent) setLoading(true)
+    try { setUsers(await api<ManagedUser[]>('/api/admin/users')); if (!silent) setError('') }
+    catch (reason) { if (!silent) setError(reason instanceof Error ? reason.message : 'Unable to load users.') }
+    finally { if (!silent) setLoading(false) }
   }
   useEffect(() => { void loadUsers() }, [])
+  useAutoRefresh(() => { void loadUsers(true) }, 30000)
 
   async function createUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true)
@@ -518,8 +540,12 @@ function SessionsSettingsPage() {
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
 
-  async function loadSessions() { setSessions(await api<ActiveSession[]>('/api/me/sessions')) }
-  useEffect(() => { void loadSessions().catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to load sessions.')) }, [])
+  async function loadSessions(silent = false) {
+    try { setSessions(await api<ActiveSession[]>('/api/me/sessions')) }
+    catch (reason) { if (!silent) setError(reason instanceof Error ? reason.message : 'Unable to load sessions.') }
+  }
+  useEffect(() => { void loadSessions() }, [])
+  useAutoRefresh(() => { void loadSessions(true) }, 20000)
 
   async function revokeSession(session: ActiveSession) {
     try {
@@ -557,11 +583,12 @@ function BlocklistPage() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
-  async function loadEntries() {
+  async function loadEntries(silent = false) {
     try { setEntries(await api<BlockedNumber[]>('/api/blocklist')) }
-    catch (issue) { setError(issue instanceof Error ? issue.message : 'Unable to load the blocklist.') }
+    catch (issue) { if (!silent) setError(issue instanceof Error ? issue.message : 'Unable to load the blocklist.') }
   }
   useEffect(() => { void loadEntries() }, [])
+  useAutoRefresh(() => { void loadEntries(true) }, 30000)
 
   async function addNumber(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError('')
@@ -1063,19 +1090,20 @@ function NotificationsPage({ canExport }: { canExport: boolean }) {
     return params
   }
 
-  async function loadMessages() {
-    setLoading(true)
+  async function loadMessages(silent = false) {
+    if (!silent) setLoading(true)
     const params = filterParams()
     const url = new URL(window.location.href)
     url.search = params.toString()
     window.history.replaceState({}, '', url)
     try {
       const result = await api<{ items: Message[]; total: number; pages: number }>(`/api/messages?${params}`)
-      setItems(result.items); setTotal(result.total); setPages(result.pages); setError('')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to load notifications.') }
-    finally { setLoading(false) }
+      setItems(result.items); setTotal(result.total); setPages(result.pages); if (!silent) setError('')
+    } catch (reason) { if (!silent) setError(reason instanceof Error ? reason.message : 'Unable to load notifications.') }
+    finally { if (!silent) setLoading(false) }
   }
   useEffect(() => { void loadMessages() }, [page, status, network])
+  useAutoRefresh(() => { void loadMessages(true) }, 15000)
 
   async function openMessage(message: Message) {
     try { setSelected(await api<MessageDetail>(`/api/messages/${message.id}`)) }
@@ -1177,12 +1205,13 @@ function DashboardPage() {
     return query
   }
 
-  async function load() {
+  async function load(silent = false) {
     if (period === 'custom' && (!customFrom || !customTo)) return
     try { setData(await api<Dashboard>(`/api/dashboard?${params()}`)); setError('') }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to load dashboard.') }
+    catch (reason) { if (!silent) setError(reason instanceof Error ? reason.message : 'Unable to load dashboard.') }
   }
   useEffect(() => { void load() }, [period, customFrom, customTo, ruleFilter, networkFilter])
+  useAutoRefresh(() => { void load(true) }, 30000)
 
   if (error) return <div className="dashboard-page"><div className="workspace-alert" role="alert">{error}</div></div>
   if (!data) return <div className="dashboard-page"><div className="dashboard-loading">Loading dashboard…</div></div>
