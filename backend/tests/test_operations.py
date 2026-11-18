@@ -108,6 +108,28 @@ def test_rule_version_history_and_rollback(ops_client):
     assert client.post(f"/api/rules/{created['id']}/versions/1/restore").status_code == 403
 
 
+def test_disabling_a_rule_suppresses_its_queued_messages(ops_client):
+    client, app = ops_client
+    created = create_rule(client).json()
+    with app.state.session_factory() as db:
+        message = InboundMessage(
+            source_message_id="queued-1", recipient="254712345678", text="Order dispatched",
+            rendered_text="Order X dispatched", status="Queued", rule_id=created["id"],
+            received_at=datetime.now(timezone.utc), raw_payload={},
+        )
+        db.add(message)
+        db.commit()
+        message_id = message.id
+
+    response = client.patch(f"/api/rules/{created['id']}", json={"is_enabled": False})
+    assert response.status_code == 200
+
+    with app.state.session_factory() as db:
+        message = db.get(InboundMessage, message_id)
+        assert message.status == "Suppressed"
+        assert message.status_reason == "Mapping rule disabled"
+
+
 def test_resend_requeues_failed_message(ops_client, monkeypatch):
     client, app = ops_client
     assert create_rule(client).status_code == 201
