@@ -25,8 +25,7 @@ def ops_client(tmp_path):
         cookie_secure=False,
         service_a_api_key="api-key",
         service_a_hmac_secret="hmac-secret",
-        service_b_dlr_api_key="dlr-key",
-        service_b_dlr_hmac_secret="dlr-secret",
+        service_b_dlr_token="dlr-token",
         service_b_reply_api_key="reply-key",
         enable_scheduler=False,
     )
@@ -61,14 +60,9 @@ def post_inbound(client, message_id, recipient="0712345678", text="Order dispatc
     })
 
 
-def post_dlr(client, provider_message_id, status, key="dlr-key", secret=b"dlr-secret"):
-    timestamp = str(int(time.time()))
-    body = json.dumps({"provider_message_id": provider_message_id, "status": status}, separators=(",", ":")).encode()
-    signature = hmac.new(secret, timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-    return client.post("/api/dlr/service-b", content=body, headers={
-        "Content-Type": "application/json", "X-Service-B-Key": key,
-        "X-Service-B-Timestamp": timestamp, "X-Service-B-Signature": signature,
-    })
+def post_dlr(client, provider_message_id, status, token="dlr-token"):
+    params = {"messageId": provider_message_id, "status": status, "errorCode": "0" if status == "delivered" else "1"}
+    return client.get(f"/api/dlr/service-b/{token}", params=params)
 
 
 def configure_gateway(client):
@@ -279,14 +273,22 @@ def test_quiet_hours_holds_messages_until_window_ends(ops_client, monkeypatch):
     assert sent == ["quiet-1"]
 
 
-def test_dlr_rejects_unauthenticated_and_bad_signature_requests(ops_client):
+def test_dlr_token_path_rejects_wrong_token_and_locks_the_bare_path(ops_client):
     client, app = ops_client
     assert create_rule(client).status_code == 201
     assert configure_gateway(client).status_code == 200
-    unauthenticated = client.post("/api/dlr/service-b", json={"provider_message_id": "whatever", "status": "delivered"})
-    assert unauthenticated.status_code == 401
-    bad_signature = post_dlr(client, "whatever", "delivered", secret=b"wrong-secret")
-    assert bad_signature.status_code == 401
+
+    # With a token configured, the bare (unprotected) path always rejects...
+    bare_path = client.get("/api/dlr/service-b", params={"messageId": "whatever", "status": "delivered", "errorCode": "0"})
+    assert bare_path.status_code == 401
+    # ...the token path rejects a wrong token...
+    wrong_token = post_dlr(client, "whatever", "delivered", token="not-the-token")
+    assert wrong_token.status_code == 401
+    # ...and accepts the right one, even for an unknown message ID (Onfon never retries, so we
+    # always ack 200 rather than 404ing a stale/unmatched ID).
+    right_token = post_dlr(client, "whatever", "delivered")
+    assert right_token.status_code == 200
+    assert right_token.json() == {"accepted": True, "matched": False}
 
 
 def test_service_b_stop_reply_blocklists_number(ops_client):

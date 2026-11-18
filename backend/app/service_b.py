@@ -1,12 +1,11 @@
-import hashlib
 import hmac
+import logging
 import re
-import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,38 +18,17 @@ from app.phone import normalize_kenyan_mobile
 
 router = APIRouter(prefix="/api/dlr", tags=["delivery reports"])
 reply_router = APIRouter(prefix="/api/inbound", tags=["delivery reports"])
+logger = logging.getLogger("upenflow.dlr")
 
-
-class DeliveryReport(BaseModel):
-    provider_message_id: str = Field(min_length=1, max_length=255)
-    status: str = Field(pattern=r"^(delivered|failed|Delivered|Failed)$")
-    error: str | None = Field(default=None, max_length=1000)
+# Onfon's push DLR uses "000"/"0" for a successful delivery and any other value for a failure.
+# There's no published table of failure codes, so anything else is simply "Failed" with the
+# gateway's own shortMessage recorded for context.
+DLR_SUCCESS_ERROR_CODES = {"0", "000"}
 
 
 class ServiceBReply(BaseModel):
     sender: str = Field(min_length=1, max_length=32)
     text: str = Field(min_length=1, max_length=1000)
-
-
-def verify_service_b_request(settings: Settings, raw_body: bytes, service_key: str | None, timestamp: str | None, signature: str | None) -> None:
-    if not settings.service_b_dlr_api_key or not settings.service_b_dlr_hmac_secret:
-        raise HTTPException(status_code=503, detail="Delivery report authentication is not configured")
-    if not service_key or not hmac.compare_digest(service_key, settings.service_b_dlr_api_key):
-        raise HTTPException(status_code=401, detail="Invalid delivery report credentials")
-    try:
-        timestamp_value = int(timestamp or "")
-    except ValueError as error:
-        raise HTTPException(status_code=401, detail="Invalid delivery report timestamp") from error
-    if abs(time.time() - timestamp_value) > 300:
-        raise HTTPException(status_code=401, detail="Delivery report timestamp expired")
-    expected = hmac.new(
-        settings.service_b_dlr_hmac_secret.encode(),
-        (timestamp or "").encode() + b"." + raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    supplied = (signature or "").removeprefix("sha256=")
-    if not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="Invalid delivery report signature")
 
 
 class ServiceBError(Exception):
@@ -142,27 +120,73 @@ class ServiceBAdapter:
             raise ServiceBError(f"Balance check returned an unparseable value: {sms_credits!r}", retryable=False) from error
 
 
-@router.post("/service-b", status_code=202)
-async def delivery_report(
-    request: Request,
-    db: Session = Depends(get_db),
-    service_key: str | None = Header(default=None, alias="X-Service-B-Key"),
-    timestamp: str | None = Header(default=None, alias="X-Service-B-Timestamp"),
-    signature: str | None = Header(default=None, alias="X-Service-B-Signature"),
-):
-    settings: Settings = request.app.state.settings
-    raw_body = await request.body()
-    verify_service_b_request(settings, raw_body, service_key, timestamp, signature)
-    payload = DeliveryReport.model_validate_json(raw_body)
-    message = db.scalar(select(InboundMessage).where(InboundMessage.provider_message_id == payload.provider_message_id))
+def record_delivery_report(
+    db: Session,
+    message_id: str,
+    status: str | None,
+    error_code: str | None,
+    short_message: str | None,
+    mobile: str | None,
+) -> dict:
+    message = db.scalar(select(InboundMessage).where(InboundMessage.provider_message_id == message_id))
     if not message:
-        raise HTTPException(status_code=404, detail="Provider message not found")
-    message.status = "Delivered" if payload.status.lower() == "delivered" else "Failed"
-    message.error = payload.error
-    if message.status == "Delivered":
+        # Onfon does not retry a push DLR if the remote server is unavailable, and there is no
+        # documented failure response for an unmatched ID — always ack 200 so a stale/unknown ID
+        # (e.g. purged by retention) doesn't make Onfon think this endpoint is unhealthy.
+        logger.warning("dlr_unmatched_message_id", extra={"fields": {"message_id": message_id, "status": status, "error_code": error_code}})
+        return {"accepted": True, "matched": False}
+
+    delivered = (error_code in DLR_SUCCESS_ERROR_CODES) if error_code is not None else bool(status and "deliver" in status.lower())
+    message.status = "Delivered" if delivered else "Failed"
+    message.error = None if delivered else (short_message or (f"Delivery failed (errorCode {error_code})" if error_code else "Delivery failed"))
+    if delivered:
         message.delivered_at = datetime.now(timezone.utc)
     db.commit()
-    return {"accepted": True}
+    logger.info("dlr_received", extra={"fields": {"message_id": message_id, "status": status, "error_code": error_code, "mobile": mobile, "matched": True}})
+    return {"accepted": True, "matched": True}
+
+
+def check_dlr_token(settings: Settings, provided: str | None) -> None:
+    if settings.service_b_dlr_token and not hmac.compare_digest(provided or "", settings.service_b_dlr_token):
+        raise HTTPException(status_code=401, detail="Invalid delivery report token")
+
+
+@router.get("/service-b", status_code=200)
+def delivery_report(
+    request: Request,
+    db: Session = Depends(get_db),
+    messageId: str = Query(..., max_length=255),
+    status: str | None = Query(default=None, max_length=64),
+    errorCode: str | None = Query(default=None, max_length=16),
+    shortMessage: str | None = Query(default=None, max_length=500),
+    doneDate: str | None = Query(default=None, max_length=32),
+    submitDate: str | None = Query(default=None, max_length=32),
+    mobile: str | None = Query(default=None, max_length=32),
+):
+    """Onfon's push DLR callback: a plain GET with no documented authentication (see
+    docs/service-b-onfon-integration.md). If UPENFLOW_SERVICE_B_DLR_TOKEN is set, register the
+    /service-b/{token} path below with Onfon instead of this bare path for a lightweight check —
+    a query-string secret isn't used here since Onfon's own example builds the callback URL as
+    `base + "?" + their_params`, which would corrupt a `?token=...` already on the URL."""
+    check_dlr_token(request.app.state.settings, None)
+    return record_delivery_report(db, messageId, status, errorCode, shortMessage, mobile)
+
+
+@router.get("/service-b/{token}", status_code=200)
+def delivery_report_with_token(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    messageId: str = Query(..., max_length=255),
+    status: str | None = Query(default=None, max_length=64),
+    errorCode: str | None = Query(default=None, max_length=16),
+    shortMessage: str | None = Query(default=None, max_length=500),
+    doneDate: str | None = Query(default=None, max_length=32),
+    submitDate: str | None = Query(default=None, max_length=32),
+    mobile: str | None = Query(default=None, max_length=32),
+):
+    check_dlr_token(request.app.state.settings, token)
+    return record_delivery_report(db, messageId, status, errorCode, shortMessage, mobile)
 
 
 @reply_router.post("/service-b-reply", status_code=202)

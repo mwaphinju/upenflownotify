@@ -1,16 +1,14 @@
-# Service B integration — Onfon Media SendBulkSMS
+# Service B integration — Onfon Media
 
-Replace the generic placeholder `ServiceBAdapter` in `backend/app/service_b.py` with a concrete
-implementation of Onfon Media's bulk SMS API, sending one message per call (immediate delivery,
-no scheduling).
+Reference for the real Onfon Media integration implemented in `backend/app/service_b.py` and
+`backend/app/monitoring.py`. All three pieces below are live, tested, and verified against a real
+Onfon account.
 
-## Endpoint
+## Sending — SendBulkSMS
 
 `POST https://api.onfonmedia.co.ke/v1/sms/SendBulkSMS`
 
 Headers: `Content-Type: application/json`, `AccessKey: <access key>`
-
-Body:
 
 ```json
 {
@@ -22,44 +20,53 @@ Body:
 }
 ```
 
-- Omit `ScheduleDateTime` entirely — all sends are immediate.
-- `IsUnicode` must reflect whether the rendered text needs Unicode encoding (the app already
-  computes GSM-7 vs Unicode via `sms_segments()` for segment counting — reuse that, don't
-  re-detect).
-- One `MessageParameters` entry per call (the app sends message-by-message, not true batches).
+- `ScheduleDateTime` is never sent — every send is immediate.
+- `IsUnicode` reflects whether the rendered text needs Unicode encoding, derived from the same
+  GSM-7/Unicode detection already used for segment counting (`sms_segments()`), not re-detected.
+- One `MessageParameters` entry per call — the app sends message-by-message, not true batches.
+- Success: `{"ErrorCode": 0, "Data": [{"MessageId": "..."}]}` → `Data[0].MessageId` is stored as
+  `provider_message_id` for later DLR matching.
+- `ErrorCode != 0` is treated as a permanent failure (not retried) — Onfon doesn't publish a
+  failure-code table, so there's no way to tell transient codes from permanent ones yet.
+- HTTP 5xx / network / timeout errors are retried per the existing retry/backoff policy; a 4xx or
+  an `ErrorCode != 0` on a 2xx response is not.
 
-## Response
+## Balance — checking SMS credit
 
-Success: `{"ErrorCode": 0, "ErrorDescription": "Success", "Data": [{"MobileNumber": "...", "MessageId": "..."}]}`
+`GET https://api.onfonmedia.co.ke/v1/sms/Balance?ApiKey={ApiKey}&ClientId={ClientId}`
 
-- `ErrorCode == 0` → success; take `Data[0].MessageId` as the provider message ID.
-- `ErrorCode != 0` → treat as a permanent failure (not retried) until Onfon's error-code table is
-  available to classify which codes are transient.
-- HTTP 5xx or network/timeout errors → retryable (existing adapter retry/backoff logic already
-  handles this at the call-site level; the adapter itself should raise the existing `ServiceBError`
-  with `retryable=True`/`False` as appropriate, same contract as today).
+Same `AccessKey` header as sending. Response:
+`{"ErrorCode": 0, "Data": [{"PluginType": "SMS", "Credits": "KSh7578560.8000"}]}`.
 
-## Configuration changes needed
+`Credits` is parsed by stripping everything but digits and `.` (handles the `KSh` prefix) into a
+`Decimal`. Checked periodically by the background scheduler — see Settings > Monitoring & Alerts
+for the enable toggle, check interval, and low-balance threshold — and on demand via the "Check
+now" button there (`POST /api/settings/balance/check`).
 
-Gateway settings currently store `base_url`, `username`, `api_key` (encrypted), `default_sender_id`,
-`allowed_sender_ids`. Onfon needs three credential values instead of `username` + `api_key`:
+## Delivery reports — push DLR
 
-- `api_key` (existing field, reused for Onfon's `ApiKey`)
-- `client_id` (new)
-- `access_key` (new — sent as the `AccessKey` header)
+Onfon pushes DLRs as a **plain GET**, no signature or auth header, to a URL you register in their
+dashboard, and does **not retry** if your server is unreachable at the time:
 
-`username` is unused by this provider and should be removed from the schema rather than kept dead.
-All three credential fields should be encrypted at rest and masked in the Settings UI, consistent
-with how `api_key` is already handled.
+```
+GET https://yourdomain/api/dlr/service-b?doneDate={doneDate}&submitDate={submitDate}&errorCode={errorCode}&shortMessage={shortMessage}&status={status}&messageId={messageId}&mobile={mobile}
+```
 
-## Acceptance
-
-- A message with GSM-7-only text sends with `IsUnicode: false`; one containing non-GSM-7 characters
-  sends with `IsUnicode: true`.
-- `Data[0].MessageId` is stored as `provider_message_id` and later matched by the existing DLR
-  endpoint.
-- A non-2xx HTTP response or network error is retried per the existing retry/backoff policy; a 2xx
-  response with `ErrorCode != 0` is not retried and the message is marked `Failed` with
-  `ErrorDescription` recorded.
-- Existing idempotency (dedup on Service A's `message_id`) and the existing DLR endpoint are
-  unaffected — this change is scoped to the outbound send call only.
+- `messageId` is matched against `provider_message_id`. An unmatched ID (stale, purged by
+  retention, or a report that arrived twice) still gets a `200 OK` — Onfon's own requirement is to
+  respond within 10 seconds regardless, and since there's no retry on their side, returning
+  anything else risks Onfon marking the endpoint unhealthy for no benefit to us.
+- `errorCode` of `0`/`000` → `Delivered`; anything else → `Failed`, with `shortMessage` (if any)
+  recorded as the error. No published error-code table exists to refine this further.
+- `doneDate`/`submitDate` format isn't documented, so they're accepted but not parsed into a
+  timestamp — `delivered_at` uses the server's own receipt time instead of trusting an unverified
+  date format from the request.
+- Optional hardening: set `UPENFLOW_SERVICE_B_DLR_TOKEN` and register
+  `https://yourdomain/api/dlr/service-b/<token>` with Onfon instead of the bare path. A
+  query-string secret (`?token=...`) isn't used because Onfon's example builds the callback URL as
+  `base + "?" + their_own_params`, which would corrupt a query string already present on the base
+  URL — a path segment is safe regardless of how naively that concatenation is implemented.
+- **This only works once the API has a public URL.** A local `docker compose` setup has nothing
+  Onfon can reach, so DLRs will never arrive in that environment — `Sent` is as far as a message's
+  status will get locally; `Delivered`/`Failed` only start appearing once deployed somewhere with
+  a real, internet-reachable domain registered with Onfon.

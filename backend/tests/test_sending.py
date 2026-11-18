@@ -24,8 +24,6 @@ def sending_client(tmp_path):
         cookie_secure=False,
         service_a_api_key="api-key",
         service_a_hmac_secret="hmac-secret",
-        service_b_dlr_api_key="dlr-key",
-        service_b_dlr_hmac_secret="dlr-secret",
     )
     app = create_app(settings)
     with TestClient(app) as client:
@@ -57,13 +55,11 @@ def post_inbound(client, message_id, recipient="0712345678", order_ref=None):
 
 
 def post_dlr(client, provider_message_id, status, error=None):
-    timestamp = str(int(time.time()))
-    body = json.dumps({"provider_message_id": provider_message_id, "status": status, "error": error}, separators=(",", ":")).encode()
-    signature = hmac.new(b"dlr-secret", timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-    return client.post("/api/dlr/service-b", content=body, headers={
-        "Content-Type": "application/json", "X-Service-B-Key": "dlr-key",
-        "X-Service-B-Timestamp": timestamp, "X-Service-B-Signature": signature,
-    })
+    # Mirrors Onfon's real push-DLR contract: a plain GET with these query params, no body.
+    params = {"messageId": provider_message_id, "status": status, "errorCode": "0" if status == "delivered" else "1"}
+    if error:
+        params["shortMessage"] = error
+    return client.get("/api/dlr/service-b", params=params)
 
 
 def test_paused_messages_queue_and_discard_is_audited(sending_client):
@@ -145,7 +141,7 @@ def test_configured_gateway_sends_once_snapshots_cost_and_accepts_dlr(sending_cl
         assert message.attempts == 1
 
     dlr = post_dlr(client, "provider-1001", "delivered")
-    assert dlr.status_code == 202
+    assert dlr.status_code == 200
     with app.state.session_factory() as db:
         message = db.scalar(select(InboundMessage).where(InboundMessage.source_message_id == "send-1001"))
         assert message.status == "Delivered"

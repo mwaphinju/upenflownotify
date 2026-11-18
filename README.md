@@ -48,7 +48,20 @@ The API persists each unique `message_id` and returns `202 Accepted`. Matching r
 
 ## Service B delivery reports and replies
 
-Delivery reports at `POST /api/dlr/service-b` use the same signed-webhook scheme as Service A: set `UPENFLOW_SERVICE_B_DLR_API_KEY` and `UPENFLOW_SERVICE_B_DLR_HMAC_SECRET`, and send `X-Service-B-Key`, `X-Service-B-Timestamp`, and `X-Service-B-Signature` headers (HMAC-SHA256 over `timestamp + "." + body`).
+Onfon pushes delivery reports as a plain `GET` to a webhook URL you register in their dashboard —
+there is no signature or auth header on their side, and they do **not** retry if your server is
+unreachable. Point the Onfon push-DLR setting at `https://yourdomain/api/dlr/service-b`; it accepts
+`messageId`, `status`, `errorCode`, `shortMessage`, `doneDate`, `submitDate`, and `mobile` query
+parameters and always responds `200 OK` (per Onfon's "respond within 10 seconds" requirement) even
+for an unrecognised `messageId`, so a stale/unmatched report never makes the endpoint look
+unhealthy. `errorCode` of `0`/`000` is treated as delivered, anything else as failed — Onfon
+doesn't publish a fuller error-code table, so that's the only distinction currently made.
+
+If you want a lightweight check beyond "the URL is secret," set `UPENFLOW_SERVICE_B_DLR_TOKEN` and
+register `https://yourdomain/api/dlr/service-b/<token>` with Onfon instead of the bare path — a
+query-string secret isn't used here because Onfon's own callback-URL construction (`base + "?" +
+their_params`) would corrupt one. Note this all requires your API to be reachable from the public
+internet; it won't receive anything from a purely local `docker compose` setup.
 
 If Service B forwards inbound SMS replies, point it at `POST /api/inbound/service-b-reply` with an `X-Service-B-Key` header matching `UPENFLOW_SERVICE_B_REPLY_API_KEY`. A reply whose text is exactly `STOP` (case-insensitive) adds the sender to the blocklist automatically.
 

@@ -28,8 +28,7 @@ class Settings(BaseSettings):
     smtp_from: str = "notify@localhost"
     service_a_api_key: str | None = None
     service_a_hmac_secret: str | None = None
-    service_b_dlr_api_key: str | None = None
-    service_b_dlr_hmac_secret: str | None = None
+    service_b_dlr_token: str | None = None
     service_b_reply_api_key: str | None = None
     redis_url: str | None = None
     auto_create_schema: bool = True
