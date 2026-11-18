@@ -101,7 +101,7 @@ DEFAULTS: dict[str, Any] = {
         "balance_check_enabled": True,
         "balance_check_interval_minutes": 60,
         "encrypted_slack_webhook_url": None,
-        "encrypted_telegram_bot_token": None,
+        "encrypted_telegram_bot_token": None,  # nosec B105 - empty default, not a credential
         "telegram_chat_id": None,
         "oncall_phone": None,
     },

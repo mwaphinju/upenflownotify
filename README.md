@@ -126,3 +126,15 @@ behind the same reverse proxy/ingress in production (or point the SPA at the API
   genuinely different origin than the API, you will need to add explicit CORS configuration and reconsider
   the cookie `SameSite` setting.
 - Dependencies are scanned in CI (`pip-audit`, `npm audit`) on every push/PR — see `.github/workflows/ci.yml`.
+- Static security analysis (`bandit`) also runs in CI against the backend; confirmed false positives are
+  suppressed inline with a `# nosec <code> - <reason>` comment, never silenced globally.
+- The three public webhook endpoints (`POST /api/inbound/service-a`, `GET /api/dlr/service-b[/{token}]`,
+  `POST /api/inbound/service-b-reply`) carry a per-IP in-memory rate limit (`app/ratelimit.py`) as
+  defense-in-depth against a flood from a single source, on top of their HMAC/token authentication. It's
+  intentionally not the DB-backed `AuthRateLimit` pattern used for login: that would add a DB round-trip
+  and row contention on every webhook call, which risks conflicting with the 20 msg/sec throughput NFR.
+  Limits are generous (100/s, 50/s, 20/s respectively) so legitimate traffic is never affected. Being
+  per-process and keyed by `request.client.host`, it resets on restart, doesn't share state across
+  replicas, and — if the API sits behind a reverse proxy — sees the proxy's IP for every caller rather
+  than the real client's; that's acceptable for a coarse flood dampener but means it is not a substitute
+  for IP allow-listing at the proxy/firewall if you need per-source isolation.

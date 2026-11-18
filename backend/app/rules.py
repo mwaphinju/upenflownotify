@@ -21,6 +21,7 @@ from app.configuration import decrypt_secret
 from app.database import build_engine, build_session_factory, get_db
 from app.models import AuditLog, BlocklistEntry, InboundMessage, MappingRule, MappingRuleVersion, SystemSetting, User
 from app.phone import DEFAULT_NETWORK_PREFIXES, detect_network, normalize_kenyan_mobile
+from app.ratelimit import rate_limit_service_a
 from app.service_b import ServiceBAdapter, ServiceBError
 
 
@@ -661,7 +662,7 @@ def enqueue_inbound(request: Request, background_tasks: BackgroundTasks, message
         raise HTTPException(status_code=503, detail="Inbound processing queue unavailable") from error
 
 
-@router.post("/api/inbound/service-a", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/api/inbound/service-a", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(rate_limit_service_a)])
 async def receive_service_a(
     request: Request,
     background_tasks: BackgroundTasks,

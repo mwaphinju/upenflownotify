@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.database import get_db
 from app.models import AuditLog, BlocklistEntry, InboundMessage
-from app.phone import normalize_kenyan_mobile
+from app.phone import mask_phone, normalize_kenyan_mobile
+from app.ratelimit import rate_limit_dlr, rate_limit_reply
 
 
 router = APIRouter(prefix="/api/dlr", tags=["delivery reports"])
@@ -142,7 +143,7 @@ def record_delivery_report(
     if delivered:
         message.delivered_at = datetime.now(timezone.utc)
     db.commit()
-    logger.info("dlr_received", extra={"fields": {"message_id": message_id, "status": status, "error_code": error_code, "mobile": mobile, "matched": True}})
+    logger.info("dlr_received", extra={"fields": {"message_id": message_id, "status": status, "error_code": error_code, "mobile": mask_phone(mobile) if mobile else None, "matched": True}})
     return {"accepted": True, "matched": True}
 
 
@@ -151,7 +152,7 @@ def check_dlr_token(settings: Settings, provided: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid delivery report token")
 
 
-@router.get("/service-b", status_code=200)
+@router.get("/service-b", status_code=200, dependencies=[Depends(rate_limit_dlr)])
 def delivery_report(
     request: Request,
     db: Session = Depends(get_db),
@@ -172,7 +173,7 @@ def delivery_report(
     return record_delivery_report(db, messageId, status, errorCode, shortMessage, mobile)
 
 
-@router.get("/service-b/{token}", status_code=200)
+@router.get("/service-b/{token}", status_code=200, dependencies=[Depends(rate_limit_dlr)])
 def delivery_report_with_token(
     token: str,
     request: Request,
@@ -189,7 +190,7 @@ def delivery_report_with_token(
     return record_delivery_report(db, messageId, status, errorCode, shortMessage, mobile)
 
 
-@reply_router.post("/service-b-reply", status_code=202)
+@reply_router.post("/service-b-reply", status_code=202, dependencies=[Depends(rate_limit_reply)])
 async def service_b_reply(
     request: Request,
     db: Session = Depends(get_db),
