@@ -28,6 +28,25 @@ py -3.12 -m pytest -c backend/pyproject.toml backend/tests
 
 The tests use isolated SQLite databases and do not require Docker, Redis, or SMTP.
 
+## Frontend end-to-end smoke test
+
+A Playwright smoke test (`frontend/e2e/smoke.spec.ts`) exercises the real login flow — password,
+OTP (fetched from MailHog's REST API), dashboard, navigating to Rules, sign-out — against a running
+stack, not a mocked one. Requires the full `docker compose up` stack to be running:
+
+```powershell
+cd frontend
+npm ci
+npx playwright install --with-deps chromium
+$env:E2E_ADMIN_EMAIL = "<your UPENFLOW_FIRST_ADMIN_EMAIL>"
+$env:E2E_ADMIN_PASSWORD = "<your UPENFLOW_FIRST_ADMIN_PASSWORD>"
+npm run test:e2e
+```
+
+CI runs this in its own `e2e` job against a throwaway stack with disposable credentials — see
+`.github/workflows/ci.yml`. It is a smoke test, not full coverage: it checks that the stack boots,
+auth works end-to-end, and basic navigation renders, not every feature.
+
 ## Service A webhook
 
 Set `UPENFLOW_SERVICE_A_API_KEY` and `UPENFLOW_SERVICE_A_HMAC_SECRET`. Sign the exact request body with HMAC-SHA256 using `timestamp + "." + body` as the signed bytes. Send the Unix timestamp, API key, and lowercase hex digest in `X-Service-A-Timestamp`, `X-Service-A-Key`, and `X-Service-A-Signature`. Timestamps outside five minutes are rejected.
