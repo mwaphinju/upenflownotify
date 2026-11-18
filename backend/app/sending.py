@@ -93,7 +93,7 @@ def update_sending(payload: SendingUpdate, request: Request, background_tasks: B
     )
     db.commit()
     if old_state == "paused" and payload.state == "on" and payload.resume_policy != "discard_all":
-        from app.rules import enqueue_delivery
+        from app.delivery import enqueue_delivery
 
         queued_ids = db.scalars(select(InboundMessage.id).where(InboundMessage.status == "Queued")).all()
         for message_id in queued_ids:

@@ -194,7 +194,7 @@ def resend_message(message_id: int, request: Request, background_tasks: Backgrou
         )
     )
     db.commit()
-    from app.rules import enqueue_delivery
+    from app.delivery import enqueue_delivery
 
     enqueue_delivery(request, background_tasks, message.id)
     return {"status": "Queued"}

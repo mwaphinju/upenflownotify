@@ -13,7 +13,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import AuditLog, InboundMessage, MappingRule, User, UserSession
 from app.security import token_hash
-from app import rules
+from app import delivery
 
 
 @pytest.fixture
@@ -128,7 +128,7 @@ def test_configured_gateway_sends_once_snapshots_cost_and_accepts_dlr(sending_cl
             sent.append((sender_id, to, text, message_key))
             return "provider-1001"
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", FakeAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", FakeAdapter)
     response = post_inbound(client, "send-1001")
     assert response.status_code == 202
     assert post_inbound(client, "send-1001").json()["duplicate"] is True
@@ -162,7 +162,7 @@ def test_blocklist_and_duplicate_guard_stop_provider_calls(sending_client, monke
             sent.append(message_key)
             return f"provider-{message_key}"
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", FakeAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", FakeAdapter)
     blocked = client.post("/api/blocklist", json={"phone_number": "+254 711 111 111", "reason": "STOP reply"})
     assert blocked.status_code == 201
     assert post_inbound(client, "blocked-1", "0711111111").status_code == 202

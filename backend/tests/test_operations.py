@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app import monitoring, rules
+from app import delivery, monitoring
 from app.config import Settings
 from app.main import create_app
 from app.models import AuditLog, BlocklistEntry, InboundMessage, MappingRule, SystemSetting, User, UserSession
@@ -143,7 +143,7 @@ def test_resend_requeues_failed_message(ops_client, monkeypatch):
             from app.service_b import ServiceBError
             raise ServiceBError("boom", retryable=False)
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", FailingAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", FailingAdapter)
     assert post_inbound(client, "resend-1").status_code == 202
     with app.state.session_factory() as db:
         message = db.scalar(select(InboundMessage).where(InboundMessage.source_message_id == "resend-1"))
@@ -157,7 +157,7 @@ def test_resend_requeues_failed_message(ops_client, monkeypatch):
         def send(self, sender_id, to, text, message_key, is_unicode=False):
             return "provider-resend-1"
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", WorkingAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", WorkingAdapter)
     resent = client.post(f"/api/messages/{message_id}/resend")
     assert resent.status_code == 200
     with app.state.session_factory() as db:
@@ -185,14 +185,14 @@ def test_resend_is_not_double_claimable(ops_client, monkeypatch):
             from app.service_b import ServiceBError
             raise ServiceBError("boom", retryable=False)
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", FailingAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", FailingAdapter)
     assert post_inbound(client, "resend-race-1").status_code == 202
     with app.state.session_factory() as db:
         message = db.scalar(select(InboundMessage).where(InboundMessage.source_message_id == "resend-race-1"))
         assert message.status == "Failed"
         message_id = message.id
 
-    monkeypatch.setattr(rules, "enqueue_delivery", lambda *args, **kwargs: None)
+    monkeypatch.setattr(delivery, "enqueue_delivery", lambda *args, **kwargs: None)
     first = client.post(f"/api/messages/{message_id}/resend")
     second = client.post(f"/api/messages/{message_id}/resend")
     assert first.status_code == 200
@@ -213,7 +213,7 @@ def test_manual_send_delivers_without_a_matching_rule(ops_client, monkeypatch):
         def send(self, sender_id, to, text, message_key, is_unicode=False):
             return "provider-manual-1"
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", FakeAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", FakeAdapter)
     response = client.post("/api/messages/manual-send", json={"recipient": "0712345678", "text": "Your parcel is ready for pickup.", "order_ref": "manual-1"})
     assert response.status_code == 202
     message_id = response.json()["message_id"]
@@ -279,7 +279,7 @@ def test_quiet_hours_holds_messages_until_window_ends(ops_client, monkeypatch):
             sent.append(message_key)
             return "provider-quiet"
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", FakeAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", FakeAdapter)
     assert post_inbound(client, "quiet-1").status_code == 202
     with app.state.session_factory() as db:
         message = db.scalar(select(InboundMessage).where(InboundMessage.source_message_id == "quiet-1"))
@@ -372,7 +372,7 @@ def test_dashboard_kpis_and_exports(ops_client, monkeypatch):
         def send(self, sender_id, to, text, message_key, is_unicode=False):
             return f"provider-{message_key}"
 
-    monkeypatch.setattr(rules, "ServiceBAdapter", FakeAdapter)
+    monkeypatch.setattr(delivery, "ServiceBAdapter", FakeAdapter)
     assert post_inbound(client, "dash-1").status_code == 202
     assert post_inbound(client, "dash-2", "0711111111").status_code == 202
 

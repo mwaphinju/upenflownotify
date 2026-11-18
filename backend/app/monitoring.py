@@ -37,7 +37,7 @@ def save_state(db: Session, state: dict) -> None:
 
 
 def wake_queued_messages(session_factory, settings: Settings) -> None:
-    from app.rules import deliver_queued_message
+    from app.delivery import deliver_queued_message
 
     with session_factory() as db:
         message_ids = db.scalars(select(InboundMessage.id).where(InboundMessage.status == "Queued")).all()

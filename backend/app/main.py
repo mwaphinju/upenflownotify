@@ -15,6 +15,7 @@ from app.service_b import reply_router as service_b_reply_router, router as deli
 from app.blocklist import router as blocklist_router
 from app.config import Settings, get_settings
 from app.database import Base, build_engine, build_session_factory
+from app.delivery import router as delivery_router
 from app.logging_config import configure_logging
 from app.models import User
 from app.monitoring import scheduler_loop
@@ -73,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(service_b_reply_router)
     app.include_router(blocklist_router)
     app.include_router(rules_router)
+    app.include_router(delivery_router)
 
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
