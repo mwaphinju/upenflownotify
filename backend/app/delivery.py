@@ -187,6 +187,127 @@ def enqueue_delivery(request: Request, background_tasks: BackgroundTasks, messag
         raise HTTPException(status_code=503, detail="Outbound processing queue unavailable") from error
 
 
+class _DeliveryHalted(Exception):
+    """Raised by a guard below to stop the pipeline and record a terminal status."""
+
+    def __init__(self, status: str, status_reason: str | None = None):
+        super().__init__(status_reason or status)
+        self.status = status
+        self.status_reason = status_reason
+
+
+def _decrypt_gateway_credentials(gateway: dict, settings: Settings) -> tuple[str, str, str]:
+    secret_key = settings.secret_encryption_key or settings.otp_pepper
+    try:
+        return (
+            decrypt_secret(gateway["encrypted_api_key"], secret_key),
+            decrypt_secret(gateway["encrypted_client_id"], secret_key),
+            decrypt_secret(gateway["encrypted_access_key"], secret_key),
+        )
+    except Exception as error:
+        raise _DeliveryHalted("Failed", "Gateway credentials could not be decrypted") from error
+
+
+def _check_rule_still_enabled(db: Session, message: InboundMessage) -> None:
+    rule = db.get(MappingRule, message.rule_id) if message.rule_id else None
+    if message.rule_id and (not rule or not rule.is_enabled):
+        raise _DeliveryHalted("Suppressed", "Mapping rule disabled before send")
+
+
+def _check_global_switch(db: Session) -> None:
+    switch = db.scalar(select(SystemSetting).where(SystemSetting.key == "sending"))
+    state = switch.value["state"] if switch else "on"
+    if state != "on":
+        raise _DeliveryHalted(
+            "Skipped" if state == "stopped" else "Queued",
+            "Global sending is stopped" if state == "stopped" else "Global sending is paused",
+        )
+
+
+def _check_quiet_hours(configuration) -> None:
+    quiet_hours = configuration.value.get("quiet_hours", {}) if configuration else {}
+    if not quiet_hours.get("enabled"):
+        return
+    from zoneinfo import ZoneInfo
+
+    tz_name = configuration.value.get("timezone", "Africa/Nairobi") if configuration else "Africa/Nairobi"
+    now_local = datetime.now(ZoneInfo(tz_name))
+    if within_time_window(now_local.strftime("%H:%M"), quiet_hours.get("start", "21:00"), quiet_hours.get("end", "07:00")):
+        raise _DeliveryHalted("Queued", "Queued: quiet hours active")
+
+
+def _normalize_and_tag_network(message: InboundMessage, configuration) -> str:
+    recipient = normalize_kenyan_mobile(message.recipient)
+    if not recipient:
+        raise _DeliveryHalted("Invalid recipient", "Only Kenyan mobile numbers are accepted")
+    message.recipient = recipient
+    if not message.network:
+        message.network = detect_network(recipient, (configuration.value.get("network_prefixes") if configuration else None) or DEFAULT_NETWORK_PREFIXES)
+    return recipient
+
+
+def _check_segment_limit(message: InboundMessage, limits: dict) -> tuple[int, str]:
+    segments, encoding, _ = sms_segments(message.rendered_text or "")
+    max_segments = int(limits.get("max_segments", 3))
+    if segments > max_segments:
+        raise _DeliveryHalted("Blocked", f"Message exceeds the {max_segments}-segment limit")
+    return segments, encoding
+
+
+def _check_sender_id_allowed(message: InboundMessage, gateway: dict) -> str:
+    sender_id = message.sender_id or gateway.get("default_sender_id")
+    if sender_id not in gateway.get("allowed_sender_ids", []):
+        raise _DeliveryHalted("Blocked", "Sender ID is not in the allowed list")
+    return sender_id
+
+
+def _check_not_blocklisted(db: Session, recipient: str) -> None:
+    blocked = db.scalar(
+        select(BlocklistEntry).where(BlocklistEntry.phone_number == recipient, BlocklistEntry.removed_at.is_(None))
+    )
+    if blocked:
+        raise _DeliveryHalted("Blocked", "Recipient is on the blocklist")
+
+
+def _check_not_duplicate(db: Session, message: InboundMessage, recipient: str, safety: dict) -> None:
+    duplicate_cutoff = message.received_at - timedelta(minutes=int(safety.get("duplicate_window_minutes", 10)))
+    duplicate = db.scalar(
+        select(InboundMessage.id).where(
+            InboundMessage.id != message.id,
+            InboundMessage.recipient == recipient,
+            InboundMessage.rendered_text == message.rendered_text,
+            InboundMessage.received_at >= duplicate_cutoff,
+        ).limit(1)
+    )
+    if duplicate:
+        raise _DeliveryHalted("Blocked", "Duplicate message to this recipient")
+
+
+def _check_recipient_throttle(db: Session, message: InboundMessage, recipient: str, safety: dict) -> None:
+    throttle_cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    sent_count = db.scalar(
+        select(func.count()).select_from(InboundMessage).where(
+            InboundMessage.id != message.id,
+            InboundMessage.recipient == recipient,
+            InboundMessage.status.in_(["Sent", "Delivered"]),
+            InboundMessage.sent_at >= throttle_cutoff,
+        )
+    ) or 0
+    if sent_count >= int(safety.get("max_per_recipient_hour", 5)):
+        raise _DeliveryHalted("Throttled", "Recipient hourly message limit reached")
+
+
+def _check_test_mode_allowlist(recipient: str, safety: dict) -> None:
+    if safety.get("test_mode") and recipient not in safety.get("test_allowlist", []):
+        raise _DeliveryHalted("Blocked", "Recipient is not on the test-mode allowlist")
+
+
+def _resolve_billing_rate(message: InboundMessage, billing: dict) -> Decimal:
+    network_rates = billing.get("network_rates", {})
+    rate_value = network_rates.get(message.network) if message.network else None
+    return Decimal(str(rate_value if rate_value is not None else billing.get("cost_per_segment_kes", "0.80")))
+
+
 def deliver_queued_message(session_factory, message_id: int, runtime_settings: Settings | None = None) -> None:
     from app.config import get_settings
 
@@ -199,109 +320,29 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
         gateway = configuration.value.get("gateway", {}) if configuration else {}
         if not gateway.get("base_url") or not gateway.get("encrypted_api_key") or not gateway.get("encrypted_client_id") or not gateway.get("encrypted_access_key"):
             return
-        try:
-            secret_key = settings.secret_encryption_key or settings.otp_pepper
-            api_key = decrypt_secret(gateway["encrypted_api_key"], secret_key)
-            client_id = decrypt_secret(gateway["encrypted_client_id"], secret_key)
-            access_key = decrypt_secret(gateway["encrypted_access_key"], secret_key)
-        except Exception:
-            message.status = "Failed"
-            message.error = "Gateway credentials could not be decrypted"
-            db.commit()
-            return
-        rule = db.get(MappingRule, message.rule_id) if message.rule_id else None
-        if message.rule_id and (not rule or not rule.is_enabled):
-            message.status = "Suppressed"
-            message.status_reason = "Mapping rule disabled before send"
-            db.commit()
-            return
-        switch = db.scalar(select(SystemSetting).where(SystemSetting.key == "sending"))
-        state = switch.value["state"] if switch else "on"
-        if state != "on":
-            message.status = "Skipped" if state == "stopped" else "Queued"
-            message.status_reason = "Global sending is stopped" if state == "stopped" else "Global sending is paused"
-            db.commit()
-            return
-        quiet_hours = configuration.value.get("quiet_hours", {}) if configuration else {}
-        if quiet_hours.get("enabled"):
-            from zoneinfo import ZoneInfo
 
-            tz_name = configuration.value.get("timezone", "Africa/Nairobi") if configuration else "Africa/Nairobi"
-            now_local = datetime.now(ZoneInfo(tz_name))
-            if within_time_window(now_local.strftime("%H:%M"), quiet_hours.get("start", "21:00"), quiet_hours.get("end", "07:00")):
-                message.status = "Queued"
-                message.status_reason = "Queued: quiet hours active"
-                db.commit()
-                return
-        recipient = normalize_kenyan_mobile(message.recipient)
-        if not recipient:
-            message.status = "Invalid recipient"
-            message.status_reason = "Only Kenyan mobile numbers are accepted"
+        try:
+            api_key, client_id, access_key = _decrypt_gateway_credentials(gateway, settings)
+            _check_rule_still_enabled(db, message)
+            _check_global_switch(db)
+            _check_quiet_hours(configuration)
+            recipient = _normalize_and_tag_network(message, configuration)
+            limits = configuration.value.get("limits", {})
+            segments, encoding = _check_segment_limit(message, limits)
+            sender_id = _check_sender_id_allowed(message, gateway)
+            safety = configuration.value.get("safety", {})
+            _check_not_blocklisted(db, recipient)
+            _check_not_duplicate(db, message, recipient, safety)
+            _check_recipient_throttle(db, message, recipient, safety)
+            _check_test_mode_allowlist(recipient, safety)
+        except _DeliveryHalted as halt:
+            message.status = halt.status
+            message.status_reason = halt.status_reason
             db.commit()
             return
-        message.recipient = recipient
-        if not message.network:
-            message.network = detect_network(recipient, (configuration.value.get("network_prefixes") if configuration else None) or DEFAULT_NETWORK_PREFIXES)
-        segments, encoding, _ = sms_segments(message.rendered_text or "")
-        limits = configuration.value.get("limits", {})
-        max_segments = int(limits.get("max_segments", 3))
-        if segments > max_segments:
-            message.status = "Blocked"
-            message.status_reason = f"Message exceeds the {max_segments}-segment limit"
-            db.commit()
-            return
-        sender_id = message.sender_id or gateway.get("default_sender_id")
-        if sender_id not in gateway.get("allowed_sender_ids", []):
-            message.status = "Blocked"
-            message.status_reason = "Sender ID is not in the allowed list"
-            db.commit()
-            return
-        safety = configuration.value.get("safety", {})
-        blocked = db.scalar(
-            select(BlocklistEntry).where(BlocklistEntry.phone_number == recipient, BlocklistEntry.removed_at.is_(None))
-        )
-        if blocked:
-            message.status = "Blocked"
-            message.status_reason = "Recipient is on the blocklist"
-            db.commit()
-            return
-        duplicate_cutoff = message.received_at - timedelta(minutes=int(safety.get("duplicate_window_minutes", 10)))
-        duplicate = db.scalar(
-            select(InboundMessage.id).where(
-                InboundMessage.id != message.id,
-                InboundMessage.recipient == recipient,
-                InboundMessage.rendered_text == message.rendered_text,
-                InboundMessage.received_at >= duplicate_cutoff,
-            ).limit(1)
-        )
-        if duplicate:
-            message.status = "Blocked"
-            message.status_reason = "Duplicate message to this recipient"
-            db.commit()
-            return
-        throttle_cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
-        sent_count = db.scalar(
-            select(func.count()).select_from(InboundMessage).where(
-                InboundMessage.id != message.id,
-                InboundMessage.recipient == recipient,
-                InboundMessage.status.in_(["Sent", "Delivered"]),
-                InboundMessage.sent_at >= throttle_cutoff,
-            )
-        ) or 0
-        if sent_count >= int(safety.get("max_per_recipient_hour", 5)):
-            message.status = "Throttled"
-            message.status_reason = "Recipient hourly message limit reached"
-            db.commit()
-            return
-        if safety.get("test_mode") and recipient not in safety.get("test_allowlist", []):
-            message.status = "Blocked"
-            message.status_reason = "Recipient is not on the test-mode allowlist"
-            db.commit()
-            return
+
         billing = configuration.value.get("billing", {})
-        network_rates = billing.get("network_rates", {})
-        rate_value = network_rates.get(message.network) if message.network else None
-        rate = Decimal(str(rate_value if rate_value is not None else billing.get("cost_per_segment_kes", "0.80")))
+        rate = _resolve_billing_rate(message, billing)
         retries = int(limits.get("retry_attempts", 3))
         if safety.get("test_mode") and safety.get("fake_gateway"):
             message.status = "Sent"
@@ -315,6 +356,13 @@ def deliver_queued_message(session_factory, message_id: int, runtime_settings: S
         message.status = "Sending"
         db.commit()
 
+    _send_with_retries(session_factory, message_id, gateway, api_key, client_id, access_key, sender_id, recipient, encoding, segments, rate, retries)
+
+
+def _send_with_retries(
+    session_factory, message_id: int, gateway: dict, api_key: str, client_id: str, access_key: str,
+    sender_id: str, recipient: str, encoding: str, segments: int, rate: Decimal, retries: int,
+) -> None:
     adapter = ServiceBAdapter(gateway["base_url"], api_key, client_id, access_key)
     for attempt in range(retries):
         with session_factory() as db:
